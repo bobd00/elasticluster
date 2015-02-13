@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/home/dave/Envs/elastinew/bin/python
 # -*- coding: utf-8 -*-#
 # @(#)setup.py
 #
@@ -74,7 +74,7 @@ if sys.version_info[:2] == (2, 6):
 
 setup(
     name="elasticluster",
-    version="1.3-dev",
+    version="1.3.dev0",
     description="A command line tool to create, manage and setup computing clusters hosted on a public or private cloud infrastructure.",
     long_description=open('README.rst').read(),
     author="Grid Computing Competence Centre, University of Zurich",

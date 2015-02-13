@@ -4,3 +4,4 @@
 build
 dist
 elasticluster.egg-info
+.idea
