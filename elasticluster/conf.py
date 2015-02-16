@@ -156,6 +156,8 @@ class Configurator(object):
             elif conf['provider'] == 'google':
                 from elasticluster.providers.gce import GoogleCloudProvider
                 provider = GoogleCloudProvider
+            elif conf['provider'] == 'azure':
+                from elasticluster.providers.azure import AzureCloudProvider
             else:
                 raise Invalid("Invalid provider '%s' for cluster '%s'"% (conf['provider'], cluster_template))
         except ImportError, ex:
@@ -431,6 +433,13 @@ class ConfigValidator(object):
                                   Optional("nova_api_version"): nova_api_version(),
         }
 
+        #dsteinkraus TODO
+        cloud_schema_azure = {"provider": 'azure',
+                                  "auth_url": All(str, Length(min=1)),
+                                  "username": All(str, Length(min=1)),
+                                  "password": All(str, Length(min=1)),
+        }
+
         node_schema = {
             "flavor": All(str, Length(min=1)),
             "image_id": All(str, Length(min=1)),
@@ -444,6 +453,7 @@ class ConfigValidator(object):
         ec2_validator = Schema(cloud_schema_ec2, required=True, extra=False)
         gce_validator = Schema(cloud_schema_gce, required=True, extra=False)
         openstack_validator = Schema(cloud_schema_openstack, required=True, extra=False)
+        azure_validator = Schema(cloud_schema_azure, required=True, extra=False)
 
         if not self.config:
             raise Invalid("No clusters found in configuration.")
@@ -462,6 +472,8 @@ class ConfigValidator(object):
                     self.config[cluster]['cloud'] = gce_validator(cloud_props)
                 elif properties['cloud']['provider'] == "openstack":
                     self.config[cluster]['cloud'] = openstack_validator(cloud_props)
+                elif properties['cloud']['provider'] == "azure":
+                    self.config[cluster]['cloud'] = azure_validator(cloud_props)
             except MultipleInvalid as ex:
                 raise Invalid("Invalid configuration for cloud section `cloud/%s`: %s" % (properties['cluster']['cloud'], str.join(", ", [str(i) for i in ex.errors])))
 
@@ -494,6 +506,8 @@ class ConfigValidator(object):
                     raise Invalid("Cluster `%s` must specify a VPC to place "
                         "`%s` instances in %s" %
                         (cluster, node, props['network_ids']))
+
+                #dsteinkraus TODO - why boto specific stuff here? do we need some?
 
         self._post_validate()
 
@@ -538,9 +552,10 @@ class ConfigReader(object):
                 raise Invalid(
                     "Invalid option for `nova_api_version`: %s" % ex)
 
+        # dsteinkraus TODO - add azure keys once they're determined
         self.schemas = {
             "cloud": Schema(
-                {"provider": Any('ec2_boto', 'google', 'openstack'),
+                {"provider": Any('ec2_boto', 'google', 'openstack', 'azure'),
                  "ec2_url": Url(str),
                  "ec2_access_key": All(str, Length(min=1)),
                  "ec2_secret_key": All(str, Length(min=1)),
