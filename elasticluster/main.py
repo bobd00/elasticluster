@@ -23,6 +23,11 @@ import os
 import shutil
 import sys
 
+#if os.environ['EC_DEBUG'] == "1":
+#    import ptvsd
+#    ptvsd.enable_attach(secret = 'bobd')
+#    ptvsd.wait_for_attach()
+
 # External modules
 import cli.app
 try:
