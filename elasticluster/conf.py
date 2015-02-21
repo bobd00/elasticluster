@@ -157,7 +157,7 @@ class Configurator(object):
                 from elasticluster.providers.gce import GoogleCloudProvider
                 provider = GoogleCloudProvider
             elif conf['provider'] == 'azure':
-                from elasticluster.providers.azure import AzureCloudProvider
+                from elasticluster.providers.azure_provider import AzureCloudProvider
                 provider = AzureCloudProvider
             else:
                 raise Invalid("Invalid provider '%s' for cluster '%s'"% (conf['provider'], cluster_template))
@@ -320,7 +320,7 @@ class ConfigValidator(object):
         * reading environment variables
         * interpolating configuraiton options
         """
-        # read cloud provider environment variables (ec2_boto or google, openstack)
+        # read cloud provider environment variables (ec2_boto, google, openstack, or azure)
         for cluster, props in self.config.iteritems():
             if "cloud" in props and "provider" in props['cloud']:
 
@@ -433,14 +433,10 @@ class ConfigValidator(object):
                                   Optional("region_name"): All(str, Length(min=1)),
                                   Optional("nova_api_version"): nova_api_version(),
         }
-
-        #dsteinkraus TODO
         cloud_schema_azure = {"provider": 'azure',
-                                  "auth_url": All(str, Length(min=1)),
-                                  "username": All(str, Length(min=1)),
-                                  "password": All(str, Length(min=1)),
+                              "subscription_id": All(str, Length(min=1)),
+                              "certificate": All(str, Length(min=1)),
         }
-
         node_schema = {
             "flavor": All(str, Length(min=1)),
             "image_id": All(str, Length(min=1)),
