@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
-__author__ = 'dave'
+__author__ = 'dsteinkraus'
 
 # System imports
 import os
@@ -49,7 +49,7 @@ class AzureCloudProvider(AbstractCloudProvider):
     __node_start_lock = threading.Lock()  # lock used for node startup
 
     #dsteinkraus TODO more args
-    def __init__(self):
+    def __init__(self, auth_url, username, password, storage_path=None):
         pass
 
     def _connect(self):

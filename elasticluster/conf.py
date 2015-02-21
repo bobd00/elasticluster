@@ -158,6 +158,7 @@ class Configurator(object):
                 provider = GoogleCloudProvider
             elif conf['provider'] == 'azure':
                 from elasticluster.providers.azure import AzureCloudProvider
+                provider = AzureCloudProvider
             else:
                 raise Invalid("Invalid provider '%s' for cluster '%s'"% (conf['provider'], cluster_template))
         except ImportError, ex:
