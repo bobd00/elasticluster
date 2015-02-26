@@ -3,15 +3,25 @@
 # Copyright 2015
 #
 
+# dsteinkraus - elasticluster 'azure' package conflicts with azure SDK. This fixes
+# it by causing "import azure" to look for a system library module.
+from __future__ import absolute_import
+
 __author__ = 'Bob Davidson <bobd@microsoft.com>'
+
 
 # System imports
 import os
 import threading
+import base64
+import subprocess
+import time
 
 # External imports
-from azure import *
-from azure.servicemanagement import *
+from azure import WindowsAzureError
+from azure.servicemanagement import (ServiceManagementService, OSVirtualHardDisk, SSH, PublicKeys,
+                                     PublicKey, LinuxConfigurationSet, ConfigurationSetInputEndpoints,
+                                     ConfigurationSetInputEndpoint)
 
 # Elasticluster imports
 from elasticluster import log
@@ -28,7 +38,20 @@ class AzureCloudProvider(AbstractCloudProvider):
 
     __node_start_lock = threading.Lock()  # lock used for node startup
 
-    def __init__(self, 
+    def wait_result(sms, req, timeout):
+        if req is None:
+            return  # sometimes this happens, seems to mean success
+        giveup_time = time.time() + timeout
+        while giveup_time > time.time():
+            operation_result = sms.get_operation_status(req.request_id)
+            if operation_result.status == "InProgress":
+                time.sleep(10)
+                continue
+            if operation_result.status == "Succeeded":
+                return
+        raise WindowsAzureError('timed out')
+
+    def __init__(self,
                  subscription_id, 
                  certificate,
                  storage_path=None):
