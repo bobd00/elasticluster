@@ -436,8 +436,6 @@ class ConfigValidator(object):
         cloud_schema_azure = {"provider": 'azure',
                               "subscription_id": All(str, Length(min=1)),
                               "certificate": All(str, Length(min=1)),
-                              "cloud_service_name": All(str, Length(min=1)),
-                              "location": All(str, Length(min=1))
         }
         node_schema = {
             "flavor": All(str, Length(min=1)),
@@ -576,6 +574,8 @@ class ConfigReader(object):
                 {"cloud": All(str, Length(min=1)),
                  "setup_provider": All(str, Length(min=1)),
                  "login": All(str, Length(min=1))}, required=True, extra=True),
+                  "cloud_service_name": All(str, Length(min=1)),
+                  "location": All(str, Length(min=1)),
             "setup": Schema(
                 {"provider": All(str, Length(min=1)),
                     }, required=True, extra=True),
