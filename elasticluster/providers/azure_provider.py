@@ -12,6 +12,7 @@ import base64
 import subprocess
 import time
 import re
+import logging
 
 # External imports
 from azure import WindowsAzureError
@@ -22,6 +23,7 @@ from azure.servicemanagement import (ServiceManagementService, OSVirtualHardDisk
 # Elasticluster imports
 from elasticluster.providers import AbstractCloudProvider
 from elasticluster.exceptions import CloudProviderError
+
 
 __author__ = 'Bob Davidson <bobd@microsoft.com>'
 
@@ -43,6 +45,8 @@ class AzureCloudProvider(AbstractCloudProvider):
         `setup` section in the configuration file.
         """
         print("azure.py: Entering AzureCloudProvider()")
+        logging.getLogger('paramiko').setLevel(logging.INFO)
+
         self._subscription_id = subscription_id
         self._certificate = certificate
         self._instances = {}
@@ -104,7 +108,7 @@ class AzureCloudProvider(AbstractCloudProvider):
             self._create_node_reqs()
             self._add_vm()
 
-        self._instances[self._short_name] = {'FULL_NAME': self._node_name}
+        self._instances[self._short_name] = {'FULL_NAME': self._node_name, 'SSH_PORT': self._ssh_port}
         return self._short_name
 
     def stop_instance(self, instance_id):
@@ -122,7 +126,15 @@ class AzureCloudProvider(AbstractCloudProvider):
         :return: list (IPs)
         """
         print "azure.py: Entering get_ips(instance_id=%s" % instance_id
-        return None
+        # return []
+        # dsteinkraus - testing - return public IP of the deployment
+        self._get_deployment()
+        instance = self._deployment.role_instance_list[0]
+        for endpoint in instance.instance_endpoints:
+            if endpoint.local_port == '22':    # all should have same vip, but make sure
+                return [endpoint.vip]
+        return []
+
 
     def is_instance_running(self, instance_id):
         """Checks if the instance is up and running.
@@ -139,7 +151,14 @@ class AzureCloudProvider(AbstractCloudProvider):
         for instance in self._deployment.role_instance_list:
             if instance.instance_name == instance_id:
                 return instance.power_state == 'Started'
-        throw Exception("could not get state for instance %s" % instance_id)
+        raise Exception("could not get state for instance %s" % instance_id)
+
+    # TODO: just an experiment on adding port #s to elasticluster concept of a node
+    def need_ports(self):
+        return True
+
+    def get_node_ssh_port(self, instance_id):
+        return self._instances[instance_id]['SSH_PORT']
 
     # -------------------- private members ------------------------------
 
@@ -191,8 +210,9 @@ class AzureCloudProvider(AbstractCloudProvider):
         print "added vm %s" % self._node_name
 
     def _get_deployment(self):
-        if self._deployment:
-            return
+        # this will keep returning old data. TODO
+        #if self._deployment:
+        #    return
         try:
             self._deployment = self._sms.get_deployment_by_name(
                 service_name=self._cloud_service_name, deployment_name=self._deployment_name)
@@ -251,7 +271,7 @@ class AzureCloudProvider(AbstractCloudProvider):
     def _create_node_reqs(self):
         try:
             print "creating network config...",
-            self._create_network_config()
+            self._ssh_port = self._create_network_config()
             print "success"
         except Exception as e:
             print "error creating network config: %s" % e
@@ -330,11 +350,13 @@ class AzureCloudProvider(AbstractCloudProvider):
         self._network_config = ConfigurationSetInputEndpoints()
         self._network_config.configuration_set_type = 'NetworkConfiguration'
         self._network_config.subnet_names = []
-        # create endpoints for ssh (22) and http (80). Map them to 1200 + instance index + port # for the public side
-        for port in (22, 80):
-            public_port = 1200 + (len(self._instances) - 1) + port
-            self._network_config.input_endpoints.append(ConfigurationSetInputEndpoint(
-                name='TCP-%s' % port, protocol='TCP', port=public_port, local_port=port))
+        # create endpoints for ssh (22). Map to 1200 + instance index + port # for the public side
+        ssh_port = 22
+        public_port = 1200 + (len(self._instances) - 1) + ssh_port
+        ret = public_port
+        self._network_config.input_endpoints.append(ConfigurationSetInputEndpoint(
+            name='TCP-%s' % ssh_port, protocol='TCP', port=public_port, local_port=ssh_port))
+        return ret
 
     def _create_vhd(self):
         disk_url = u'http://%s.blob.core.windows.net/vhds/%s.vhd' % (self._storage_account, self._node_name)

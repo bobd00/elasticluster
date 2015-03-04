@@ -37,6 +37,8 @@ from elasticluster.exceptions import TimeoutError, NodeNotFound, \
     InstanceError, ClusterError
 from elasticluster.repository import MemRepository
 
+SSH_PORT = 22
+
 class IgnorePolicy(paramiko.MissingHostKeyPolicy):
     def missing_host_key(self, client, hostname, key):
         log.info('Ignoring unknown %s host key for %s: %s' %
@@ -390,6 +392,15 @@ class Cluster(object):
         # the nodes, so update the storage file again.
         self.repository.save_or_update(self)
 
+        # dsteinkraus - testing - a hack to see if we are azure without
+        # requiring mods to all non-azure providers
+        need_ports = False;
+        try:
+            need_ports = self._cloud_provider.need_ports()
+        except Exception as e:
+            pass
+
+
         # Try to connect to each node. Run the setup action only when
         # we successfully connect to all of them.
         signal.signal(signal.SIGALRM, timeout_handler)
@@ -412,7 +423,12 @@ class Cluster(object):
         try:
             while pending_nodes:
                 for node in pending_nodes[:]:
-                    ssh = node.connect(keyfile=self.known_hosts_file)
+                    # dsteinkraus
+                    if need_ports:
+                        port = self._cloud_provider.get_node_ssh_port(node.instance_id)
+                        ssh = node.connect(keyfile=self.known_hosts_file, port=port)
+                    else:
+                        ssh = node.connect(keyfile=self.known_hosts_file)
                     if ssh:
                         log.info("Connection to node %s (%s) successful.",
                                  node.name, node.connection_ip())
@@ -764,7 +780,8 @@ class Node(object):
         """
         return self.preferred_ip
 
-    def connect(self, keyfile=None):
+    # dsteinkraus add port
+    def connect(self, keyfile=None, port=SSH_PORT):
         """Connect to the node via ssh using the paramiko library.
 
         :return: :py:class:`paramiko.SSHClient` - ssh connection or None on
@@ -797,7 +814,8 @@ class Node(object):
                             username=self.image_user,
                             allow_agent=True,
                             key_filename=self.user_key_private,
-                            timeout=Node.connection_timeout)
+                            timeout=Node.connection_timeout,
+                            port=port)
                 log.debug("Connection to %s succeded!", ip)
                 if ip != self.preferred_ip:
                     log.debug("Setting `preferred_ip` to %s", ip)
