@@ -3,7 +3,7 @@
 # Copyright 2015
 #
 
-# dsteinkraus - elasticluster 'azure' package conflicts with azure SDK. This fixes
+# elasticluster 'azure' package conflicts with azure SDK. This fixes
 # it by causing "import azure" to look for a system library module.
 from __future__ import absolute_import
 

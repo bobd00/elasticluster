@@ -7,8 +7,6 @@
 .. This file follows reStructuredText markup syntax; see
    http://docutils.sf.net/rst.html for more information
 
-Modified for practice by dsteinkraus.
-
 `Elasticluster`_ aims to provide a user-friendly command line tool to
 create, manage and setup computing clusters hosted on cloud
 infrastructures (like `Amazon's Elastic Compute Cloud EC2`_ or `Google

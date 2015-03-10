@@ -504,8 +504,6 @@ class ConfigValidator(object):
                         "`%s` instances in %s" %
                         (cluster, node, props['network_ids']))
 
-                #dsteinkraus TODO - why boto specific stuff here? do we need some?
-
         self._post_validate()
 
 
@@ -549,7 +547,6 @@ class ConfigReader(object):
                 raise Invalid(
                     "Invalid option for `nova_api_version`: %s" % ex)
 
-        # dsteinkraus TODO - add azure keys once they're determined
         self.schemas = {
             "cloud": Schema(
                 {"provider": Any('ec2_boto', 'google', 'openstack', 'azure'),
