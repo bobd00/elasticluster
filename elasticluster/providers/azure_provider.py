@@ -12,7 +12,7 @@ import base64
 import subprocess
 import time
 import re
-import logging
+import threading
 
 # External imports
 from azure import (WindowsAzureError, WindowsAzureMissingResourceError)
@@ -34,6 +34,8 @@ class AzureCloudProvider(AbstractCloudProvider):
     Azure Python interface connect to the Azure clouds and manage instances.
     """
 
+    __node_start_lock = threading.Lock()  # lock used for node startup
+
     def __init__(self,
                  subscription_id,
                  certificate,
@@ -44,7 +46,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         Usually these are configuration option of the corresponding
         `setup` section in the configuration file.
         """
-        print("azure.py: Entering AzureCloudProvider()")
+        print("Entering AzureCloudProvider()")
         # logging.getLogger('paramiko').setLevel(logging.DEBUG)
         # logging.basicConfig(level=logging.DEBUG)
 
@@ -91,41 +93,43 @@ class AzureCloudProvider(AbstractCloudProvider):
         itself.
         :return: str - instance id of the started instance
         """
-        self._key_name = key_name
-        self._public_key_path = public_key_path
-        self._private_key_path = private_key_path
-        self._security_group = security_group
-        self._flavor = flavor
-        self._image_id = image_id
-        self._image_userdata = image_userdata
-        self._cloud_service_name = cloud_service_name
-        self._username = username
-        self._node_name = node_name
-        self._location = location
-        self._storage_account = storage_account
-        self._deployment_name = deployment_name
-        self._hostname = hostname   # used for what now? vs node_name?
+        # locking is rudimentary at this point
+        with AzureCloudProvider.__node_start_lock:
+            self._key_name = key_name
+            self._public_key_path = public_key_path
+            self._private_key_path = private_key_path
+            self._security_group = security_group
+            self._flavor = flavor
+            self._image_id = image_id
+            self._image_userdata = image_userdata
+            self._cloud_service_name = cloud_service_name
+            self._username = username
+            self._node_name = node_name
+            self._location = location
+            self._storage_account = storage_account
+            self._deployment_name = deployment_name
+            self._hostname = hostname   # used for what now? vs node_name?
 
-        # azure node names are only significant to 15 chars (???) so create a shortname
-        self._short_name = re.sub('^.*-', '', self._node_name)
-        self._get_ssh_certificate_tokens(self._public_key_path)
+            # azure node names are only significant to 15 chars (???) so create a shortname
+            self._short_name = re.sub('^.*-', '', self._node_name)
+            self._get_ssh_certificate_tokens(self._public_key_path)
 
-        first = False
-        if len(self._instances) == 0:
-            first = True
-            self._create_global_reqs()
-            self._create_node_reqs()
-            self._create_vm()
-        else:
-            self._create_node_reqs()
-            self._add_vm()
+            first = False
+            if len(self._instances) == 0:
+                first = True
+                self._create_global_reqs()
+                self._create_node_reqs()
+                self._create_vm()
+            else:
+                self._create_node_reqs()
+                self._add_vm()
 
-        self._instances[self._short_name] = {'FULL_NAME': self._node_name, 'SSH_PORT': self._ssh_port,
-                                             'LIVE': True, 'OS_DISK': None}
-        if first:
-            self._instances[self._short_name]['FIRST'] = True
-        self._find_os_disks()
-        return self._short_name
+            self._instances[self._short_name] = {'FULL_NAME': self._node_name, 'SSH_PORT': self._ssh_port,
+                                                 'LIVE': True, 'OS_DISK': None}
+            if first:
+                self._instances[self._short_name]['FIRST'] = True
+            self._find_os_disks()
+            return self._short_name
 
     def stop_instance(self, instance_id):
         """Stops the instance gracefully.
@@ -134,7 +138,7 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: None
         """
-        print "azure.py: Entering stop_instance(instance_id=%s)" % instance_id
+        print "Entering stop_instance(instance_id=%s)" % instance_id
         # elasticluster is pretty bad about retaining exceptions, so report any ourselves
         try:
             node_info = self._instances.get(instance_id)
