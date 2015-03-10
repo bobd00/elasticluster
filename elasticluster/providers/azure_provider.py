@@ -52,6 +52,11 @@ class AzureCloudProvider(AbstractCloudProvider):
         # import rpdb2
         # rpdb2.start_embedded_debugger('food')
 
+        # Ansible debug level
+        import ansible
+        import ansible.utils
+        ansible.utils.VERBOSITY = 9
+
         self._subscription_id = subscription_id
         self._certificate = certificate
         self._instances = {}
@@ -75,6 +80,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         self._hostname = None
         self._short_name = None
         self._deployment = None
+        self._load_balancer_ip = None
 
     def start_instance( self, key_name, public_key_path, private_key_path, security_group, flavor, image_id,
             image_userdata, location, cloud_service_name, username=None, node_name=None, storage_account=None,
@@ -171,13 +177,16 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: list (IPs)
         """
+        if self._load_balancer_ip and self._instances[instance_id]['SSH_PORT']:
+            return ["%s:%s" % (self._load_balancer_ip, self._instances[instance_id]['SSH_PORT'])]
         self._get_deployment()
         for instance in self._deployment.role_instance_list:
-            if instance.host_name == instance_id:
+            if instance.instance_name == instance_id:
                 for endpoint in instance.instance_endpoints:
                     if endpoint.local_port == '22':    # all should have same vip, but make sure we have ssh
+                        self._load_balancer_ip = endpoint.vip
                         return ["%s:%s" % (endpoint.vip, endpoint.public_port)]
-        return []
+        raise Exception("get_ips: couldn't find IP for instance_id %s" % instance_id)
 
 
     def is_instance_running(self, instance_id):

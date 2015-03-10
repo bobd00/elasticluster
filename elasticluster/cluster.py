@@ -797,8 +797,8 @@ class Node(object):
                           self.name, ip)
                 # dsteinkraus - handle case of explicit port
                 addr, _, port = ip.partition(':')
-                # if port is None, will default to SSH_PORT (22)
-                if port is not None:
+                # if port not specified, will default to SSH_PORT (22)
+                if port:
                     port = int(port)
                 ssh.connect(addr,
                             username=self.image_user,

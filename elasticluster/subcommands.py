@@ -603,7 +603,7 @@ class SshFrontend(AbstractCommand):
         host = frontend.connection_ip()
         # dsteinkraus - handle explicit port number
         addr, _, port = host.partition(':')
-        if port is None:
+        if not port:
             port = str(SSH_PORT)
         username = frontend.image_user
         knownhostsfile = cluster.known_hosts_file if cluster.known_hosts_file \
