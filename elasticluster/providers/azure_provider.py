@@ -47,6 +47,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         `setup` section in the configuration file.
         """
         print("Entering AzureCloudProvider()")
+        # Paramiko debug level
         # logging.getLogger('paramiko').setLevel(logging.DEBUG)
         # logging.basicConfig(level=logging.DEBUG)
 
@@ -55,9 +56,9 @@ class AzureCloudProvider(AbstractCloudProvider):
         # rpdb2.start_embedded_debugger('food')
 
         # Ansible debug level
-        import ansible
-        import ansible.utils
-        ansible.utils.VERBOSITY = 9
+        # import ansible
+        # import ansible.utils
+        # ansible.utils.VERBOSITY = 9
 
         self._subscription_id = subscription_id
         self._certificate = certificate
@@ -139,40 +140,40 @@ class AzureCloudProvider(AbstractCloudProvider):
         :return: None
         """
         print "Entering stop_instance(instance_id=%s)" % instance_id
-        # elasticluster is pretty bad about retaining exceptions, so report any ourselves
-        try:
-            node_info = self._instances.get(instance_id)
-            if node_info is None:
-                raise Exception("could not get state for instance %s" % instance_id)
-            if not node_info['LIVE']:
-                print "node %s has already been deleted" % instance_id
-                return
-            if node_info.get('FIRST'):
-                # the first vm can only be deleted by deleting the deployment, but
-                # elasticluster doesn't promise to delete it last. Postponing the delete might
-                # lead to unwanted consequences. So, delete the deployment (and all vms)
-                # now,
-                vhds_to_delete = set()
-                for instance_id, node in self._instances.iteritems():
-                    if not node['LIVE']:
-                        continue
-                    node['LIVE'] = False
-                    vhds_to_delete.add(node['OS_DISK'])
-                    node['OS_DISK'] = None
-                self._delete_deployment()
-                self._instances = {}
-                for disk_name in vhds_to_delete:
-                    self._delete_vhd(disk_name)
-                self._delete_global_reqs()
-            else:
-                node_info['LIVE'] = False
-                vhd_to_delete = node_info['OS_DISK']
-                node_info['OS_DISK'] = None
-                self._delete_vm(instance_id)
-                self._delete_vhd(vhd_to_delete)
-        except Exception as e:
-            print "error stopping instance %s: %s" % (instance_id, e)
-            raise
+        # elasticluster is pretty bad about reporting exceptions, so report any ourselves
+        with AzureCloudProvider.__node_start_lock:
+            try:
+                node_info = self._instances.get(instance_id)
+                if node_info is None:
+                    raise Exception("could not get state for instance %s" % instance_id)
+                if not node_info['LIVE']:
+                    print "node %s has already been deleted" % instance_id
+                    return
+                if node_info.get('FIRST'):
+                    # the first vm can only be deleted by deleting the deployment, but
+                    # elasticluster doesn't promise to delete it last. Postponing the delete might
+                    # lead to unwanted consequences. So, delete the deployment (and all vms)
+                    # now,
+                    vhds_to_delete = set()
+                    for instance_id, node in self._instances.iteritems():
+                        if not node['LIVE']:
+                            continue
+                        node['LIVE'] = False
+                        vhds_to_delete.add(node['OS_DISK'])
+                        node['OS_DISK'] = None
+                    self._delete_deployment()
+                    for disk_name in vhds_to_delete:
+                        self._delete_vhd(disk_name)
+                    self._delete_global_reqs()
+                else:
+                    node_info['LIVE'] = False
+                    vhd_to_delete = node_info['OS_DISK']
+                    node_info['OS_DISK'] = None
+                    self._delete_vm(instance_id)
+                    self._delete_vhd(vhd_to_delete)
+            except Exception as e:
+                print "error stopping instance %s: %s" % (instance_id, e)
+                raise
 
     def get_ips(self, instance_id):
         """Retrieves the private and public ip addresses for a given instance.
@@ -407,7 +408,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         try:
             self._sms.delete_storage_account(service_name=self._storage_account)
         except Exception as e:
-            print "TODO DANGER: ignoring error %s deleting cloud provider %s" % (e, self._storage_account)
+            print "TODO DANGER: ignoring error %s deleting storage account %s" % (e, self._storage_account)
 
     def _add_certificate(self):
         # Add certificate to cloud service
