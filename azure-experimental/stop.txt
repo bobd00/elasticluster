@@ -1,0 +1,38 @@
+(elastinew)dave@10:~/Envs/elastinew/elasticluster$ elasticluster stop azure-gridengine
+Entering AzureCloudProvider()
+Do you want really want to stop cluster azure-gridengine? [yN] y
+Destroying cluster `azure-gridengine`
+Entering stop_instance(instance_id=compute001)
+_delete_vhd: error on attempt #1 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #2 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #3 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #4 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #5 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #6 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #7 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #8 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #9 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #10 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: error on attempt #11 to delete disk deployment-97531-compute002-0-201503111359100696: Conflict (Conflict)
+_delete_vhd: success on attempt 12
+_delete_vhd: success on attempt 1
+_delete_vhd: success on attempt 1
+_delete_vhd: success on attempt 1
+_delete_vhd: success on attempt 1
+_delete_vhd: success on attempt 1
+_delete_vhd: success on attempt 1
+deleting storage account... success
+deleting cloud service... succeeded
+Entering stop_instance(instance_id=compute002)
+node compute002 has already been deleted
+Entering stop_instance(instance_id=compute003)
+node compute003 has already been deleted
+Entering stop_instance(instance_id=compute004)
+node compute004 has already been deleted
+Entering stop_instance(instance_id=compute005)
+node compute005 has already been deleted
+Entering stop_instance(instance_id=compute006)
+node compute006 has already been deleted
+Entering stop_instance(instance_id=frontend001)
+node frontend001 has already been deleted
+
