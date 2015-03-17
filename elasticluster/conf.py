@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 #
-# Copyright (C) 2013 GC3, University of Zurich
+# Copyright (C) 2013, 2014 GC3, University of Zurich
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -366,7 +366,7 @@ class ConfigValidator(object):
         with elasticluster. As well all types are converted to the expected
         format if possible.
 
-        :raisegs: :py:class:`voluptuous.MultipleInvalid` if multiple
+        :raises: :py:class:`voluptuous.MultipleInvalid` if multiple
                  properties are not compliant
         :raises: :py:class:`voluptuous.Invalid` if one property is invalid
         """
@@ -446,7 +446,7 @@ class ConfigValidator(object):
 
         # validation
         validator = Schema(schema, required=True, extra=True)
-        validator_node = Schema(node_schema, required=True, extra=True)
+        node_validator = Schema(node_schema, required=True, extra=True)
         ec2_validator = Schema(cloud_schema_ec2, required=True, extra=False)
         gce_validator = Schema(cloud_schema_gce, required=True, extra=False)
         openstack_validator = Schema(cloud_schema_openstack, required=True, extra=False)
@@ -484,25 +484,27 @@ class ConfigValidator(object):
                 match = re.search(r'^[a-zA-Z0-9-]*$', node)
                 if not match:
                     raise Invalid(
-                        "Invalid name `%s` for node group. A valid node group "
-                        "can only consist of letters, digits or the hyphens "
-                        "character (`-`)" % node)
+                        "Invalid name `%s` for node group. A valid node group"
+                        " can only consist of letters, digits or the hyphen"
+                        " character (`-`)" % (node,))
 
-                validator_node(props)
+                node_validator(props)
 
-                if properties['cloud']['provider'] == 'ec2_boto' and \
-                   'vpc' in self.config[cluster]['cloud'] and \
-                   'network_ids' not in props:
-                    raise Invalid("Node group `%s/%s` is being used in "
-                        "a VPC, so it must specify network_ids." %
-                        (cluster, node))
+                if (properties['cloud']['provider'] == 'ec2_boto'
+                    and 'vpc' in self.config[cluster]['cloud']
+                    and 'network_ids' not in props):
+                    raise Invalid(
+                        "Node group `%s/%s` is being used in"
+                        " a VPC, so it must specify network_ids."
+                        % (cluster, node))
 
-                if properties['cloud']['provider'] == 'ec2_boto' and \
-                   'network_ids' in props and \
-                   'vpc' not in self.config[cluster]['cloud']:
-                    raise Invalid("Cluster `%s` must specify a VPC to place "
-                        "`%s` instances in %s" %
-                        (cluster, node, props['network_ids']))
+                if (properties['cloud']['provider'] == 'ec2_boto'
+                    and 'network_ids' in props
+                    and 'vpc' not in self.config[cluster]['cloud']):
+                    raise Invalid(
+                        "Cluster `%s` must specify a VPC to place"
+                        " `%s` instances in %s"
+                        % (cluster, node, props['network_ids']))
 
         self._post_validate()
 
