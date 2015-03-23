@@ -35,4 +35,5 @@ flavor=Small
 storage_account=storageacct97531b
 security_group=default
 deployment_name=deployment-97531
+global_var_ansible_ssh_host_key_dsa_public=''
 
