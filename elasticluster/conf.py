@@ -440,7 +440,7 @@ class ConfigValidator(object):
         node_schema = {
             "flavor": All(str, Length(min=1)),
             "image_id": All(str, Length(min=1)),
-            "security_group": All(str, Length(min=1)),
+            Optional("security_group"): All(str, Length(min=1)),
             Optional("network_ids"): All(str, Length(min=1)),
         }
 
@@ -565,10 +565,16 @@ class ConfigReader(object):
                  "gce_client_id": All(str, Length(min=1)),
                  "gce_client_secret": All(str, Length(min=1)),
                  "nova_client_api": nova_api_version()}, extra=True),
+                 "subscription_id": All(str, Length(min=1)),
+                 "certificate": All(str, Length(min=1)),
+                 "cloud_service_name": All(str, Length(min=1)),
+                 "location": All(str, Length(min=1)),
             "cluster": Schema(
                 {"cloud": All(str, Length(min=1)),
                  "setup_provider": All(str, Length(min=1)),
                  "login": All(str, Length(min=1))}, required=True, extra=True),
+                  "cloud_service_name": All(str, Length(min=1)),
+                  "location": All(str, Length(min=1)),
             "setup": Schema(
                 {"provider": All(str, Length(min=1)),
                     }, required=True, extra=True),
