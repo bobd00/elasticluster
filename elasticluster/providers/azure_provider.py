@@ -9,22 +9,17 @@ from __future__ import absolute_import
 
 # System imports
 import base64
-import subprocess
-import time
 import re
+import subprocess
 import threading
+import time
 
 # External imports
+from azure import servicemanagement as smanager
 from azure import WindowsAzureError
-from azure.servicemanagement import (
-    ServiceManagementService, OSVirtualHardDisk, SSH, PublicKeys,
-    PublicKey, LinuxConfigurationSet, ConfigurationSetInputEndpoints,
-    ConfigurationSetInputEndpoint
-)
-
 # Elasticluster imports
-from elasticluster.providers import AbstractCloudProvider
-from elasticluster.exceptions import CloudProviderError
+from elasticluster import AbstractCloudProvider
+from elasticluster import exceptions
 
 
 __author__ = 'Bob Davidson <bobd@microsoft.com>'
@@ -146,7 +141,7 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: None
         """
-        print "Entering stop_instance(instance_id=%s)" % instance_id
+        print("Entering stop_instance(instance_id=%s)" % instance_id)
         # elasticluster is pretty bad about reporting exceptions,
         # so report any ourselves
         with AzureCloudProvider.__node_start_lock:
@@ -156,7 +151,7 @@ class AzureCloudProvider(AbstractCloudProvider):
                     raise Exception("could not get state for instance %s" %
                                     instance_id)
                 if not node_info['LIVE']:
-                    print "node %s has already been deleted" % instance_id
+                    print("node %s has already been deleted" % instance_id)
                     return
                 if node_info.get('FIRST'):
                     # the first vm can only be deleted by deleting the
@@ -180,8 +175,8 @@ class AzureCloudProvider(AbstractCloudProvider):
                     node_info['OS_DISK'] = None
                     self._delete_vm(instance_id)
                     self._delete_vhd(vhd_to_delete)
-            except Exception as e:
-                print "error stopping instance %s: %s" % (instance_id, e)
+            except Exception as exc:
+                print("error stopping instance %s: %s" % (instance_id, exc))
                 raise
 
     def get_ips(self, instance_id):
@@ -225,7 +220,7 @@ class AzureCloudProvider(AbstractCloudProvider):
     # -------------------- private members ------------------------------
 
     def _create_vm(self):
-        print "creating vm %s..." % self._node_name
+        print("creating vm %s..." % self._node_name)
         try:
             result = self._sms.create_virtual_machine_deployment(
                 service_name=self._cloud_service_name,
@@ -241,16 +236,16 @@ class AzureCloudProvider(AbstractCloudProvider):
                 virtual_network_name=None
             )
             self._wait_result(result, self._wait_timeout)
-        except Exception as e:
-            if str(e) == 'Conflict (Conflict)':
-                print "virtual machine already exists."
+        except Exception as exc:
+            if str(exc) == 'Conflict (Conflict)':
+                print("virtual machine already exists.")
             else:
-                print "error creating vm: %s" % e
+                print("error creating vm: %s" % exc)
             raise
-        print "created vm %s" % self._node_name
+        print("created vm %s" % self._node_name)
 
     def _add_vm(self):
-        print "adding vm %s..." % self._node_name
+        print("adding vm %s..." % self._node_name)
         try:
             result = self._sms.add_role(
                 service_name=self._cloud_service_name,
@@ -263,16 +258,16 @@ class AzureCloudProvider(AbstractCloudProvider):
                 role_type='PersistentVMRole'
             )
             self._wait_result(result, self._wait_timeout)
-        except Exception as e:
-            if str(e) == 'Conflict (Conflict)':
-                print "virtual machine already exists."
+        except Exception as exc:
+            if str(exc) == 'Conflict (Conflict)':
+                print("virtual machine already exists.")
             else:
-                print "error adding vm: %s" % e
+                print("error adding vm: %s" % exc)
             raise
-        print "added vm %s" % self._node_name
+        print("added vm %s" % self._node_name)
 
     def _delete_vm(self, instance_id):
-        print "deleting vm %s..." % instance_id
+        print("deleting vm %s..." % instance_id)
         try:
             result = self._sms.delete_role(
                 service_name=self._cloud_service_name,
@@ -280,20 +275,21 @@ class AzureCloudProvider(AbstractCloudProvider):
                 role_name=instance_id
             )
             self._wait_result(result, self._wait_timeout)
-        except Exception as e:
-            print "error deleting vm %s: %s" % (instance_id, e)
-            print "TODO DANGER: ignoring error for now!"
+        except Exception as exc:
+            print("error deleting vm %s: %s" % (instance_id, exc))
+            print("TODO DANGER: ignoring error for now!")
             return
             # raise
-        print "success"
+        print("success")
 
     def _get_deployment(self):
         try:
             self._deployment = self._sms.get_deployment_by_name(
                 service_name=self._cloud_service_name,
                 deployment_name=self._deployment_name)
-        except Exception as e:
-            raise CloudProviderError("error getting deployment: %s" % str(e))
+        except Exception as exc:
+            raise exceptions.CloudProviderError(
+                "error getting deployment: %s" % str(exc))
 
     def _delete_deployment(self):
         result = self._sms.delete_deployment(
@@ -305,91 +301,93 @@ class AzureCloudProvider(AbstractCloudProvider):
     def _sms(self):
         if self._sms_internal is None:
             try:
-                self._sms_internal = ServiceManagementService(
+                self._sms_internal = smanager.ServiceManagementService(
                     self._subscription_id, self._certificate)
-            except Exception as e:
-                print "error initializing azure serice: %s" % e
+            except Exception as exc:
+                print("error initializing azure serice: %s" % exc)
                 raise
         return self._sms_internal
 
-    # TODO: query for what's been built already instead of just
+    # TODO(bobd00): query for what's been built already instead of just
     # catching conflict errors
     def _create_global_reqs(self):
         try:
-            print "creating cloud service...",
+            print("creating cloud service...")
             if self._create_cloud_service():
-                print "success"
+                print("success")
             else:
-                print "already exists"
-        except Exception as e:
-            print "error creating cloud service: %s" % e
+                print("already exists")
+        except Exception as exc:
+            print("error creating cloud service: %s" % exc)
             raise
         try:
-            print "creating storage account...",
+            print("creating storage account...")
             if self._create_storage_account():
-                print "success"
+                print("success")
             else:
-                print "already exists"
-        except Exception as e:
-            print "error creating storage account: %s" % e
+                print("already exists")
+        except Exception as exc:
+            print("error creating storage account: %s" % exc)
             raise
         try:
-            print "adding certificate...",
+            print("adding certificate...")
             self._add_certificate()
-            print "success"
-        except Exception as e:
-            print "error adding certificate: %s" % e
+            print("success")
+        except Exception as exc:
+            print("error adding certificate: %s" % exc)
             raise
 
     # tear down non-node-specific resources. Current default is to delete
     # everything; this may change.
     def _delete_global_reqs(self):
-        print "deleting storage account...",
+        print("deleting storage account...")
         self._delete_storage_account()
-        print "success"
+        print("success")
 
-        print "deleting cloud service...",
+        print("deleting cloud service...")
         self._delete_cloud_service()
-        print "succeeded"
+        print("succeeded")
 
     def _create_node_reqs(self):
         try:
-            print "creating network config...",
+            print("creating network config...")
             self._ssh_port = self._create_network_config()
-            print "success"
-        except Exception as e:
-            print "error creating network config: %s" % e
+            print("success")
+        except Exception as exc:
+            print("error creating network config: %s" % exc)
             raise
         try:
-            print "creating vhd...",
+            print("creating vhd...")
             self._create_vhd()
-            print "success"
-        except Exception as e:
-            print "error creating vhd: %s" % e
+            print("success")
+        except Exception as exc:
+            print("error creating vhd: %s" % exc)
             raise
 
-    # TODO unused
+    # TODO(bobd00) unused
     # def _get_vm(self, node_name):
     #    return self._sms.get_role(service_name=self._cloud_service_name,
     #                              deployment_name=self._deployment_name,
     #                              role_name=node_name)
-    # TODO unused
+
+    # TODO(bobd00) unused
     def _create_affinity_group(self):
         try:
             result = self._sms.create_affinity_group(
                 name=self._affinity_group, label=self._affinity_group,
                 location=self._location, description=self._affinity_group)
             self._wait_result(result, self._wait_timeout)
-        except WindowsAzureError as e:
-            if str(e) == 'Conflict (Conflict)':
+        except WindowsAzureError as exc:
+            if str(exc) == 'Conflict (Conflict)':
                 return False
-            raise CloudProviderError(
-                msg="error creating affinity group: %s" % e)
+            raise exceptions.CloudProviderError(
+                msg="error creating affinity group: %s" % exc)
         return True
 
     # Note: the method we call is synchronous, but the private method it calls
     # has an async option. this is often the case.
-    # TODO unused
+
+    # TODO(bobd00) unused
     def _delete_affinity_group(self):
         self._sms.delete_affinity_group(
             affinity_group_name=self._affinity_group)
@@ -404,7 +402,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         except WindowsAzureError as e:
             if str(e) == 'Conflict (Conflict)':
                 return False
-            raise CloudProviderError(
+            raise exceptions.CloudProviderError(
                 msg="error creating cloud service: %s" % e)
         return True
 
@@ -425,7 +423,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         except WindowsAzureError as e:
             if str(e) == 'Conflict (Conflict)':
                 return False
-            raise CloudProviderError(
+            raise exceptions.CloudProviderError(
                 "error creating storage account: %s" % str(e))
         return True
 
@@ -446,22 +444,23 @@ class AzureCloudProvider(AbstractCloudProvider):
 
     def _create_network_config(self):
         # Create linux configuration
-        self._linux_config = LinuxConfigurationSet(
+        self._linux_config = smanager.LinuxConfigurationSet(
             self._short_name, self._username, None,
             disable_ssh_password_authentication=True)
-        ssh_config = SSH()
-        ssh_config.public_keys = PublicKeys()
+        ssh_config = smanager.SSH()
+        ssh_config.public_keys = smanager.PublicKeys()
         authorized_keys_path = (u'/home/%s/.ssh/authorized_keys' %
                                 self._username)
         # ssh_config.public_keys.public_keys.append(PublicKey(
         #    path=self._public_key_path, fingerprint=self._fingerprint))
         ssh_config.public_keys.public_keys.append(
-            PublicKey(path=authorized_keys_path, fingerprint=self._fingerprint)
+            smanager.PublicKey(path=authorized_keys_path,
+                               fingerprint=self._fingerprint)
         )
         self._linux_config.ssh = ssh_config
 
         # Create network configuration
-        self._network_config = ConfigurationSetInputEndpoints()
+        self._network_config = smanager.ConfigurationSetInputEndpoints()
         self._network_config.configuration_set_type = 'NetworkConfiguration'
         self._network_config.subnet_names = []
         # create endpoints for ssh (22). Map to 1200 + instance index + port
@@ -470,32 +469,32 @@ class AzureCloudProvider(AbstractCloudProvider):
         public_port = 1200 + (len(self._instances) - 1) + ssh_port
         ret = public_port
         self._network_config.input_endpoints.append(
-            ConfigurationSetInputEndpoint(name='TCP-%s' % ssh_port,
-                                          protocol='TCP',
-                                          port=public_port,
-                                          local_port=ssh_port))
+            smanager.ConfigurationSetInputEndpoint(name='TCP-%s' % ssh_port,
+                                                   protocol='TCP',
+                                                   port=public_port,
+                                                   local_port=ssh_port))
         return ret
 
     def _create_vhd(self):
         disk_url = u'http://%s.blob.core.windows.net/vhds/%s.vhd' % (
             self._storage_account, self._node_name)
-        self._vhd = OSVirtualHardDisk(self._image_id, disk_url)
+        self._vhd = smanager.OSVirtualHardDisk(self._image_id, disk_url)
         return disk_url
 
     def _delete_vhd(self, name):
         attempts = 100
-        for attempt in xrange(1, attempts):
+        for attempt in range(1, attempts):
             try:
                 # delete_vhd=False doesn't seem to help if the disk is not
                 # ready to be deleted yet
                 self._sms.delete_disk(disk_name=name, delete_vhd=True)
-                print "_delete_vhd: success on attempt %s" % attempt
+                print("_delete_vhd: success on attempt %s" % attempt)
                 return
             except Exception as e:
                 print("_delete_vhd: error on attempt #%i "
                       "to delete disk %s: %s") % (attempt, name, e)
                 time.sleep(10)
-        print "_delete_vhd: giving up after %i attempts" % attempts
+        print("_delete_vhd: giving up after %i attempts" % attempts)
         raise Exception("could not delete vhd %s" % name)
 
     def _find_os_disks(self):
@@ -515,11 +514,11 @@ class AzureCloudProvider(AbstractCloudProvider):
                             and disk.os == 'Linux'):
                         self._instances[instance_id]['OS_DISK'] = disk.name
                         break
-        except Exception as e:
-            print "error in _find_os_disks: %s" % e
+        except Exception as exc:
+            print("error in _find_os_disks: %s" % exc)
             raise
 
-    # TODO replace with elasticluster or ansible equivalent
+    # TODO() replace with elasticluster or ansible equivalent
     def _run_command(self, args):
         p = subprocess.Popen(args, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE)
@@ -538,16 +537,18 @@ class AzureCloudProvider(AbstractCloudProvider):
             if operation_result.status == "Succeeded":
                 return
             if operation_result.status == "Failed":
-                raise CloudProviderError("async operation failed: " +
-                                         operation_result.error.message)
-        raise CloudProviderError('async operation timed out')
+                raise exceptions.CloudProviderError(
+                    "async operation failed: %s" %
+                    operation_result.error.message)
+        raise exceptions.CloudProviderError('async operation timed out')
 
     def _get_ssh_certificate_tokens(self, ssh_cert_path):
         rc, stdout, stderr = self._run_command(['openssl', 'x509', '-in',
                                                 ssh_cert_path, '-fingerprint',
                                                 '-noout'])
         if rc != 0:
-            raise CloudProviderError("error getting fingerprint: %s" % stderr)
+            raise exceptions.CloudProviderError(
+                "error getting fingerprint: %s" % stderr)
         self._fingerprint = stdout.strip()[17:].replace(':', '')
 
         rc, stdout, stderr = self._run_command(['openssl', 'pkcs12', '-export',
@@ -555,8 +556,8 @@ class AzureCloudProvider(AbstractCloudProvider):
                                                 '-nokeys', '-password',
                                                 'pass:'])
         if rc != 0:
-            raise CloudProviderError("error getting pkcs12 signature: %s" %
-                                     stderr)
+            raise exceptions.CloudProviderError(
+                "error getting pkcs12 signature: %s" % stderr)
         self._pkcs12_base64 = base64.b64encode(stdout.strip())
 
     def __getstate__(self):
