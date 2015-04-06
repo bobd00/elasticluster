@@ -20,7 +20,7 @@ from azure import WindowsAzureError
 # Elasticluster imports
 from elasticluster import AbstractCloudProvider
 from elasticluster import exceptions
-
+from elasticluster import log
 
 __author__ = 'Bob Davidson <bobd@microsoft.com>'
 
@@ -43,7 +43,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         Usually these are configuration option of the corresponding
         `setup` section in the configuration file.
         """
-        print("Entering AzureCloudProvider()")
+        log.debug("Entering AzureCloudProvider()")
         # Paramiko debug level
         # logging.getLogger('paramiko').setLevel(logging.DEBUG)
         # logging.basicConfig(level=logging.DEBUG)
@@ -141,17 +141,19 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: None
         """
-        print("Entering stop_instance(instance_id=%s)" % instance_id)
+        log.debug("Entering stop_instance(instance_id=%(instance_id)s)",
+                  {"instance_id": instance_id})
         # elasticluster is pretty bad about reporting exceptions,
         # so report any ourselves
         with AzureCloudProvider.__node_start_lock:
             try:
                 node_info = self._instances.get(instance_id)
                 if node_info is None:
-                    raise Exception("could not get state for instance %s" %
+                    raise Exception("Could not get state for instance %s" %
                                     instance_id)
                 if not node_info['LIVE']:
-                    print("node %s has already been deleted" % instance_id)
+                    log.error("The node %(node)s has already been deleted.",
+                              {"node": instance_id})
                     return
                 if node_info.get('FIRST'):
                     # the first vm can only be deleted by deleting the
@@ -176,7 +178,9 @@ class AzureCloudProvider(AbstractCloudProvider):
                     self._delete_vm(instance_id)
                     self._delete_vhd(vhd_to_delete)
             except Exception as exc:
-                print("error stopping instance %s: %s" % (instance_id, exc))
+                log.exception(
+                    "Error stopping instance %(instance)s: %(reason)s",
+                    {"instance": instance_id, "reason": exc})
                 raise
 
     def get_ips(self, instance_id):
@@ -220,7 +224,7 @@ class AzureCloudProvider(AbstractCloudProvider):
     # -------------------- private members ------------------------------
 
     def _create_vm(self):
-        print("creating vm %s..." % self._node_name)
+        log.debug("Creating vm %(vm_name)s.", {"vm_name": self._node_name})
         try:
             result = self._sms.create_virtual_machine_deployment(
                 service_name=self._cloud_service_name,
@@ -238,14 +242,15 @@ class AzureCloudProvider(AbstractCloudProvider):
             self._wait_result(result, self._wait_timeout)
         except Exception as exc:
             if str(exc) == 'Conflict (Conflict)':
-                print("virtual machine already exists.")
+                log.error("Virtual machine already exists.")
             else:
-                print("error creating vm: %s" % exc)
+                log.exception("Error creating virtual machine: %(reason)s",
+                              {"reason": exc})
             raise
-        print("created vm %s" % self._node_name)
+        log.info("Created vm %(node_name)s.", {"node_name": self._node_name})
 
     def _add_vm(self):
-        print("adding vm %s..." % self._node_name)
+        log.debug("Adding vm %(node_name)s.", {"node_name": self._node_name})
         try:
             result = self._sms.add_role(
                 service_name=self._cloud_service_name,
@@ -260,14 +265,14 @@ class AzureCloudProvider(AbstractCloudProvider):
             self._wait_result(result, self._wait_timeout)
         except Exception as exc:
             if str(exc) == 'Conflict (Conflict)':
-                print("virtual machine already exists.")
+                log.error("The virtual machine already exists.")
             else:
-                print("error adding vm: %s" % exc)
+                log.exception("Error adding vm: %(reason)s", {"reason": exc})
             raise
-        print("added vm %s" % self._node_name)
+        log.info("Added vm %(node_name)s", {"node_name", self._node_name})
 
     def _delete_vm(self, instance_id):
-        print("deleting vm %s..." % instance_id)
+        log.debug("Deleting vm %(instance_id)s.", {"instance_id": instance_id})
         try:
             result = self._sms.delete_role(
                 service_name=self._cloud_service_name,
@@ -276,11 +281,12 @@ class AzureCloudProvider(AbstractCloudProvider):
             )
             self._wait_result(result, self._wait_timeout)
         except Exception as exc:
-            print("error deleting vm %s: %s" % (instance_id, exc))
-            print("TODO DANGER: ignoring error for now!")
+            log.exception("Error deleting vm %(instance_id)s: %(reason)s",
+                          {"instance_id": instance_id, "reason": exc})
+            log.debug("TODO DANGER: ignoring error for now!")
             return
             # raise
-        print("success")
+        log.info("The virtual machine was deleted successfully.")
 
     def _get_deployment(self):
         try:
@@ -304,64 +310,71 @@ class AzureCloudProvider(AbstractCloudProvider):
                 self._sms_internal = smanager.ServiceManagementService(
                     self._subscription_id, self._certificate)
             except Exception as exc:
-                print("error initializing azure serice: %s" % exc)
+                log.exception("Error initializing azure serice: %(error)s",
+                              {"error": exc})
                 raise
         return self._sms_internal
 
     # TODO(bobd00): query for what's been built already instead of just
     # catching conflict errors
     def _create_global_reqs(self):
+        log.debug("Creating the cloud service.")
         try:
-            print("creating cloud service...")
             if self._create_cloud_service():
-                print("success")
+                log.info('The cloud service was successfully created.')
             else:
-                print("already exists")
+                log.error("The cloud service already exists.")
         except Exception as exc:
-            print("error creating cloud service: %s" % exc)
+            log.exception("Failed to create the cloud service: %(reason)s",
+                          {"reason": exc})
             raise
+        log.debug('Creating storage account.')
         try:
-            print("creating storage account...")
             if self._create_storage_account():
-                print("success")
+                log.info('The storage account was successfully created.')
             else:
-                print("already exists")
+                log.error("The storage account already exists.")
         except Exception as exc:
-            print("error creating storage account: %s" % exc)
+            log.exception("Failed to create the storage account: %(reason)s",
+                          {"reason": exc})
             raise
+        log.debug('Adding the certificate.')
         try:
-            print("adding certificate...")
             self._add_certificate()
-            print("success")
+            log.info('The certificate was successfully added.')
         except Exception as exc:
-            print("error adding certificate: %s" % exc)
+            log.exception("Failed to add the certificate: %(reason)s",
+                          {"reason": exc})
             raise
 
     # tear down non-node-specific resources. Current default is to delete
     # everything; this may change.
     def _delete_global_reqs(self):
-        print("deleting storage account...")
+        log.debug("Deleting storage account.")
         self._delete_storage_account()
-        print("success")
+        log.debug("The storage account was successfully deleted.")
 
-        print("deleting cloud service...")
+        log.debug("Deleting cloud service.")
         self._delete_cloud_service()
-        print("succeeded")
+        log.debug("The cloud service was successfully deleted.")
 
     def _create_node_reqs(self):
+        log.debug('Creating the network config.')
         try:
-            print("creating network config...")
             self._ssh_port = self._create_network_config()
-            print("success")
+            log.info('The network config was successfully created.')
         except Exception as exc:
-            print("error creating network config: %s" % exc)
+            log.exception('Failed to create the network config: %(reason)s',
+                          {"reason": exc})
             raise
+
+        log.debug('Creating the VHD.')
         try:
-            print("creating vhd...")
             self._create_vhd()
-            print("success")
+            log.info('The VHD was successfully created.')
         except Exception as exc:
-            print("error creating vhd: %s" % exc)
+            log.exception('Failed to create the VHD: %(reason)s',
+                          {"reason": exc})
             raise
 
     # TODO(bobd00) unused
@@ -431,9 +444,11 @@ class AzureCloudProvider(AbstractCloudProvider):
         try:
             self._sms.delete_storage_account(
                 service_name=self._storage_account)
-        except Exception as e:
-            print("TODO DANGER: ignoring error %s "
-                  "deleting storage account %s") % (e, self._storage_account)
+        except Exception as exc:
+            log.warning("Failed to delete the storage account "
+                        "%(account)s: %(reason)s",
+                        {"account": self._storage_account, "reason": exc})
+            # FIXME(bobd00): This excetion is ignored
 
     def _add_certificate(self):
         # Add certificate to cloud service
@@ -488,13 +503,17 @@ class AzureCloudProvider(AbstractCloudProvider):
                 # delete_vhd=False doesn't seem to help if the disk is not
                 # ready to be deleted yet
                 self._sms.delete_disk(disk_name=name, delete_vhd=True)
-                print("_delete_vhd: success on attempt %s" % attempt)
+                log.info("The disk %(disk)s was successfully deleted. "
+                         "Attempt no. %(attempt)d",
+                         {"disk": name, "attempt": attempt})
                 return
-            except Exception as e:
-                print("_delete_vhd: error on attempt #%i "
-                      "to delete disk %s: %s") % (attempt, name, e)
+            except Exception as exc:
+                log.exception("Failed to delete the disk %(disk)s: %(reason)s."
+                              " Attempt no. %(attempt)d",
+                              {"disk": name, "reason": exc,
+                               "attempt": attempt})
                 time.sleep(10)
-        print("_delete_vhd: giving up after %i attempts" % attempts)
+        log.error("The maximum number of attempt was reached.")
         raise Exception("could not delete vhd %s" % name)
 
     def _find_os_disks(self):
@@ -515,7 +534,8 @@ class AzureCloudProvider(AbstractCloudProvider):
                         self._instances[instance_id]['OS_DISK'] = disk.name
                         break
         except Exception as exc:
-            print("error in _find_os_disks: %s" % exc)
+            log.exception("Failed to find os disks: %(reason)s",
+                          {"reason": exc})
             raise
 
     # TODO() replace with elasticluster or ansible equivalent
