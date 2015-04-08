@@ -283,9 +283,8 @@ class AzureCloudProvider(AbstractCloudProvider):
         except Exception as exc:
             log.exception("Error deleting vm %(instance_id)s: %(reason)s",
                           {"instance_id": instance_id, "reason": exc})
-            log.debug("TODO DANGER: ignoring error for now!")
+            # FIXME(bobd00): This excetion is ignored
             return
-            # raise
         log.info("The virtual machine was deleted successfully.")
 
     def _get_deployment(self):
@@ -318,30 +317,10 @@ class AzureCloudProvider(AbstractCloudProvider):
     # TODO(bobd00): query for what's been built already instead of just
     # catching conflict errors
     def _create_global_reqs(self):
-        log.debug("Creating the cloud service.")
-        try:
-            if self._create_cloud_service():
-                log.info('The cloud service was successfully created.')
-            else:
-                log.error("The cloud service already exists.")
-        except Exception as exc:
-            log.exception("Failed to create the cloud service: %(reason)s",
-                          {"reason": exc})
-            raise
-        log.debug('Creating storage account.')
-        try:
-            if self._create_storage_account():
-                log.info('The storage account was successfully created.')
-            else:
-                log.error("The storage account already exists.")
-        except Exception as exc:
-            log.exception("Failed to create the storage account: %(reason)s",
-                          {"reason": exc})
-            raise
-        log.debug('Adding the certificate.')
+        self._create_cloud_service()
+        self._create_storage_account()
         try:
             self._add_certificate()
-            log.info('The certificate was successfully added.')
         except Exception as exc:
             log.exception("Failed to add the certificate: %(reason)s",
                           {"reason": exc})
@@ -350,28 +329,19 @@ class AzureCloudProvider(AbstractCloudProvider):
     # tear down non-node-specific resources. Current default is to delete
     # everything; this may change.
     def _delete_global_reqs(self):
-        log.debug("Deleting storage account.")
         self._delete_storage_account()
-        log.debug("The storage account was successfully deleted.")
-
-        log.debug("Deleting cloud service.")
         self._delete_cloud_service()
-        log.debug("The cloud service was successfully deleted.")
 
     def _create_node_reqs(self):
-        log.debug('Creating the network config.')
         try:
             self._ssh_port = self._create_network_config()
-            log.info('The network config was successfully created.')
         except Exception as exc:
             log.exception('Failed to create the network config: %(reason)s',
                           {"reason": exc})
             raise
 
-        log.debug('Creating the VHD.')
         try:
             self._create_vhd()
-            log.info('The VHD was successfully created.')
         except Exception as exc:
             log.exception('Failed to create the VHD: %(reason)s',
                           {"reason": exc})
@@ -406,23 +376,35 @@ class AzureCloudProvider(AbstractCloudProvider):
             affinity_group_name=self._affinity_group)
 
     def _create_cloud_service(self):
+        log.debug("Creating the cloud service.")
         try:
             result = self._sms.create_hosted_service(
                 service_name=self._cloud_service_name,
                 label=self._cloud_service_name,
                 location=self._location)
             self._wait_result(result, self._wait_timeout)
-        except WindowsAzureError as e:
-            if str(e) == 'Conflict (Conflict)':
+        except WindowsAzureError as exc:
+            if str(exc) == 'Conflict (Conflict)':
+                log.error("The cloud service already exists.")
                 return False
+
+            log.exception("Failed to create the cloud service: %(reason)s",
+                          {"reason": exc})
             raise exceptions.CloudProviderError(
-                msg="error creating cloud service: %s" % e)
+                msg="error creating cloud service: %s" % exc)
+
+        log.info('The cloud service was successfully created.')
         return True
 
     def _delete_cloud_service(self):
+        log.debug("Deleting cloud service.")
+        # TODO(alexandrucoman): Check if the `delete_hosted_service` raises any
+        #                       exception.
         self._sms.delete_hosted_service(service_name=self._cloud_service_name)
+        log.debug("The cloud service was successfully deleted.")
 
     def _create_storage_account(self):
+        log.debug('Creating storage account.')
         try:
             result = self._sms.create_storage_account(
                 service_name=self._storage_account,
@@ -433,14 +415,21 @@ class AzureCloudProvider(AbstractCloudProvider):
             )
             # this seems to be taking much longer than the others...
             self._wait_result(result, self._wait_timeout * 100)
-        except WindowsAzureError as e:
-            if str(e) == 'Conflict (Conflict)':
+        except WindowsAzureError as exc:
+            if str(exc) == 'Conflict (Conflict)':
+                log.error("The storage account already exists.")
                 return False
+
+            log.exception("Failed to create the storage account: %(reason)s",
+                          {"reason": exc})
             raise exceptions.CloudProviderError(
-                "error creating storage account: %s" % str(e))
+                "error creating storage account: %s" % str(exc))
+
+        log.debug('The storage account was successfully created.')
         return True
 
     def _delete_storage_account(self):
+        log.debug("Deleting storage account.")
         try:
             self._sms.delete_storage_account(
                 service_name=self._storage_account)
@@ -449,15 +438,22 @@ class AzureCloudProvider(AbstractCloudProvider):
                         "%(account)s: %(reason)s",
                         {"account": self._storage_account, "reason": exc})
             # FIXME(bobd00): This excetion is ignored
+        else:
+            # TODO(alexandrocoman): Remove the else branch when the exception
+            #                       is properly treated.
+            log.debug("The storage account was successfully deleted.")
 
     def _add_certificate(self):
         # Add certificate to cloud service
+        log.debug('Adding the certificate.')
         result = self._sms.add_service_certificate(self._cloud_service_name,
                                                    self._pkcs12_base64,
                                                    'pfx', '')
         self._wait_result(result, self._wait_timeout)
+        log.debug('The certificate was successfully added.')
 
     def _create_network_config(self):
+        log.debug('Creating the network config.')
         # Create linux configuration
         self._linux_config = smanager.LinuxConfigurationSet(
             self._short_name, self._username, None,
@@ -488,12 +484,17 @@ class AzureCloudProvider(AbstractCloudProvider):
                                                    protocol='TCP',
                                                    port=public_port,
                                                    local_port=ssh_port))
+
+        log.debug('The network config was successfully created.')
         return ret
 
     def _create_vhd(self):
+        log.debug('Creating the VHD.')
         disk_url = u'http://%s.blob.core.windows.net/vhds/%s.vhd' % (
             self._storage_account, self._node_name)
         self._vhd = smanager.OSVirtualHardDisk(self._image_id, disk_url)
+
+        log.debug('The VHD was successfully created.')
         return disk_url
 
     def _delete_vhd(self, name):
@@ -503,9 +504,9 @@ class AzureCloudProvider(AbstractCloudProvider):
                 # delete_vhd=False doesn't seem to help if the disk is not
                 # ready to be deleted yet
                 self._sms.delete_disk(disk_name=name, delete_vhd=True)
-                log.info("The disk %(disk)s was successfully deleted. "
-                         "Attempt no. %(attempt)d",
-                         {"disk": name, "attempt": attempt})
+                log.debug("The disk %(disk)s was successfully deleted. "
+                          "Attempt no. %(attempt)d",
+                          {"disk": name, "attempt": attempt})
                 return
             except Exception as exc:
                 log.exception("Failed to delete the disk %(disk)s: %(reason)s."
