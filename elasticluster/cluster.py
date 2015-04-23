@@ -796,15 +796,15 @@ class Node(object):
                 log.debug("Trying to connect to host %s (%s)",
                           self.name, ip)
                 port = SSH_PORT # must specify, since we are passing it
-                if False:
-                    # dsteinkraus - handle case of explicit port
-                    addr, _, port = ip.partition(':')
-                    # if port not specified, will default to SSH_PORT (22)
-                    if port:
-                        port = int(port)
-                        ip = addr
+                # dsteinkraus - handle case of explicit port
+                addr, _, port = ip.partition(':')
+                # if port not specified, will default to SSH_PORT (22)
+                if port:
+                    port = int(port)
+                else:
+                    addr = ip
 
-                ssh.connect(ip,
+                ssh.connect(addr,
                             username=self.image_user,
                             allow_agent=True,
                             key_filename=self.user_key_private,
