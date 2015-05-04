@@ -30,6 +30,8 @@ DEFAULT_WAIT_TIMEOUT = 600
 WAIT_RESULT_SLEEP = 10
 VNET_NS = 'http://schemas.microsoft.com/ServiceHosting' \
           '/2011/07/NetworkConfiguration'
+VM_RETRIES = 10
+VM_RETRY_SLEEP = 20
 
 # resource-management constants
 VMS_PER_CLOUD_SERVICE = 20
@@ -237,9 +239,12 @@ class AzureGlobalConfig:
     # We need all possible conversions amongst these.
 
     def _vm_name_to_flat(self, vm_name):
-        if vm_name.startswith(self._base_name + '_vm'):
+        if vm_name and vm_name.startswith(self._base_name + '_vm'):
             bare = vm_name[len(self._base_name) + 3:]
             return int(bare)
+        err = "_vm_name_to_flat: can't process vm_name %s" % vm_name
+        log.error(err)
+        raise Exception(err)
 
     def _vm_flat_to_resources(self, vm_index):
         i_sub = floor_div(vm_index, self._vm_per_sub)
@@ -488,11 +493,10 @@ class AzureCloudService:
         try:
             dep = self._subscription._sms.get_deployment_by_name(
                 service_name=self._name, deployment_name=self._name)
-            if not dep:
-                raise Exception('get_deployment_by_name for %s did not return'
-                                ' a value' % self._name)
             return dep
         except Exception as exc:
+            if str(exc) == 'Not found (Not Found)':
+                return None
             log.error('error getting deployment %s: %s' % (self._name, exc))
             raise
 
@@ -556,7 +560,6 @@ class AzureStorageAccount:
                 # this seems to be taking much longer than the others...
                 self._subscription._wait_result(
                     result, self._config._wait_timeout * 10)
-                self._config._parent._storage_accounts.add(self)
             except Exception as e:
                 # this shouldn't happen
                 # if str(e) == 'Conflict (Conflict)':
@@ -779,7 +782,8 @@ class AzureVM:
     def _delete(self):
         try:
             if len(self._cloud_service._instances) == 1:
-                # we are the last node, so delete deployment
+                # we are the last node in this cloud service,
+                # so delete deployment
                 self._cloud_service._delete_deployment()
             else:
                 result = self._cloud_service._subscription._sms.delete_role(
@@ -803,51 +807,60 @@ class AzureVM:
                 self._storage_account._create_vhd(self._node_name, self._image)
             virtual_network_name = \
                 self._config._parent._subscriptions[0]._vnet._name
-
-            sms = self._cloud_service._subscription._sms
-            if self._cloud_service._instances:
-                # add a node to existing deployement
-                result = sms.add_role(
-                    service_name=self._cloud_service._name,
-                    deployment_name=self._cloud_service._name,
-                    role_name=self._qualified_name,
-                    system_config=self._system_config,
-                    network_config=self._network_config,
-                    os_virtual_hard_disk=self._os_virtual_hard_disk,
-                    role_size=self._flavor,
-                    role_type='PersistentVMRole')
-                self._subscription._wait_result(result)
-            else:
-                # create the deployment and first node
-                result = sms.create_virtual_machine_deployment(
-                    service_name=self._cloud_service._name,
-                    deployment_name=self._cloud_service._name,
-                    deployment_slot='production',
-                    label=self._node_name,
-                    role_name=self._qualified_name,
-                    system_config=self._system_config,
-                    network_config=self._network_config,
-                    os_virtual_hard_disk=self._os_virtual_hard_disk,
-                    role_size=self._flavor,
-                    role_type='PersistentVMRole',
-                    virtual_network_name=virtual_network_name)
-                self._subscription._wait_result(result)
         except Exception as e:
-            if str(e) == 'Conflict (Conflict)':
-                log.debug('virtual machine %s already exists.'
-                          % self._qualified_name)
-            else:
-                log.error('error creating vm %s: %s'
-                          % (self._qualified_name, e))
+            log.error('error creating reqs for vm %s: %s'
+                      % (self._qualified_name, e))
             raise
-        self._created = True
-        with self._cloud_service._resource_lock:
-            self._cloud_service._instances[self._qualified_name] = self
 
-        # need to find the disk name for the OS disk attached to this vm.
-        # this involves redundant work that should be dealt with if it's
-        # a problem.
-        self._subscription._find_os_disks()
+        sms = self._cloud_service._subscription._sms
+        attempt = 0
+        while attempt < VM_RETRIES:
+            try:
+                if self._cloud_service._instances:
+                    # add a node to existing deployement
+                    result = sms.add_role(
+                        service_name=self._cloud_service._name,
+                        deployment_name=self._cloud_service._name,
+                        role_name=self._qualified_name,
+                        system_config=self._system_config,
+                        network_config=self._network_config,
+                        os_virtual_hard_disk=self._os_virtual_hard_disk,
+                        role_size=self._flavor,
+                        role_type='PersistentVMRole')
+                else:
+                    # create the deployment and first node
+                    result = sms.create_virtual_machine_deployment(
+                        service_name=self._cloud_service._name,
+                        deployment_name=self._cloud_service._name,
+                        deployment_slot='production',
+                        label=self._node_name,
+                        role_name=self._qualified_name,
+                        system_config=self._system_config,
+                        network_config=self._network_config,
+                        os_virtual_hard_disk=self._os_virtual_hard_disk,
+                        role_size=self._flavor,
+                        role_type='PersistentVMRole',
+                        virtual_network_name=virtual_network_name)
+                self._subscription._wait_result(result)
+                self._created = True
+                with self._cloud_service._resource_lock:
+                    self._cloud_service._instances[self._qualified_name] = self
+
+                # need to find the disk name for the OS disk attached to this vm.
+                # this involves redundant work that should be dealt with if it's
+                # a problem.
+                self._subscription._find_os_disks()
+                return
+            except Exception as e:
+                if str(e) == 'Conflict (Conflict)':
+                    log.debug('virtual machine %s already exists.'
+                              % self._qualified_name)
+                    raise   # no point in retrying
+                else:
+                    log.error('error creating vm %s (attempt %i of %i): %s'
+                              % (self._qualified_name, attempt, VM_RETRIES, e))
+            time.sleep(VM_RETRY_SLEEP)
+            attempt += 1
 
     def pause(self, instance_id, keep_provisioned=True):
         """shuts down the instance without destroying it.
@@ -1018,6 +1031,7 @@ class AzureCloudProvider(AbstractCloudProvider):
         `setup` section in the configuration file.
         """
         # Paramiko debug level
+        # import logging
         # logging.getLogger('paramiko').setLevel(logging.DEBUG)
         # logging.basicConfig(level=logging.DEBUG)
 
@@ -1029,6 +1043,10 @@ class AzureCloudProvider(AbstractCloudProvider):
         import ansible
         import ansible.utils
         ansible.utils.VERBOSITY = 2
+
+        # flag indicating resource creation failed - don't even
+        # attempt node operations
+        self._start_failed = None
 
         # this lock should never be held for long - only for changes to the
         # resource arrays this object owns, and queries about same.
@@ -1067,6 +1085,11 @@ class AzureCloudProvider(AbstractCloudProvider):
         itself.
         :return: str - instance id of the started instance
         """
+
+        if self._start_failed:
+            raise Exception('start_instance for node %s: failing due to'
+                            ' previous errors.' % node_name)
+
         # locking is rudimentary at this point
         with self._resource_lock:
             # it'd be nice if elasticluster called something like
@@ -1096,6 +1119,8 @@ class AzureCloudProvider(AbstractCloudProvider):
             index = self._n_instances
             if index == 0:
                 self._create_global_reqs()
+                if self._start_failed:
+                    return None
 
             vm = AzureVM(
                 self._config,
@@ -1117,6 +1142,10 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: None
         """
+        if self._start_failed:
+            raise Exception('stop_instance for node %s: failing due to'
+                            ' previous errors.' % instance_id)
+
         with self._resource_lock:
             try:
                 vm = self._qualified_name_to_vm(instance_id)
@@ -1151,6 +1180,10 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: list (IPs)
         """
+        if self._start_failed:
+            raise Exception('get_ips for node %s: failing due to'
+                            ' previous errors.' % instance_id)
+
         ret = list()
         vm = self._qualified_name_to_vm(instance_id)
         if not vm:
@@ -1171,6 +1204,10 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: bool - True if running, False otherwise
         """
+        if self._start_failed:
+            raise Exception('is_instance_running for node %s: failing due to'
+                            ' previous errors.' % instance_id)
+
         vm = self._qualified_name_to_vm(instance_id)
         if not vm:
             raise Exception("Can't find instance_id %s" % instance_id)
@@ -1210,6 +1247,7 @@ class AzureCloudProvider(AbstractCloudProvider):
                 acs = AzureCloudService(self._config, sub, index)
                 acs._create()
                 acs._add_certificate()
+                log.debug("Created cloud service %i (%s)" % (index, acs._name))
                 sub._cloud_services.append(acs)
 
             for index in range(self._config._n_storage_accounts):
@@ -1217,6 +1255,8 @@ class AzureCloudProvider(AbstractCloudProvider):
                 sub = self._subscriptions[i_sub]
                 asa = AzureStorageAccount(self._config, sub, index)
                 asa._create()
+                log.debug("Created storage account %i (%s)" %
+                          (index, asa._name))
                 sub._storage_accounts.append(asa)
 
             # one vnet should be enough for ~ 1000 vms. Tie it to
@@ -1224,9 +1264,11 @@ class AzureCloudProvider(AbstractCloudProvider):
             sub = self._subscriptions[0]
             sub._vnet = AzureVNet(self._config, sub, 0)
             sub._vnet._create()
-
+            # getting failures if we try to use the VNet right away, so:
+            time.sleep(WAIT_RESULT_SLEEP)
         except Exception as e:
             log.error('_create_global_reqs error: %s' % e)
+            self._start_failed = True
             raise
 
     # tear down non-node-specific resources. Current default is to delete
@@ -1243,11 +1285,14 @@ class AzureCloudProvider(AbstractCloudProvider):
                         log.error(err)
                         raise Exception(err)
                     cs._delete()
+                    log.debug("Deleted cloud service '%s'" % cs._name)
 
                 for sa in self._storage_accounts:
                     sa._delete()
+                    log.debug("Deleted storage account '%s'" % sa._name)
 
-            self._subscriptions[0]._vnet._delete()
+            self._subscriptions[0]._vnet._delete() # no-op at present
+
 
         except Exception as e:
             log.error('_delete_global_reqs error: %s' % e)
