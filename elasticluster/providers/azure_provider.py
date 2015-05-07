@@ -435,7 +435,7 @@ class AzureCloudService:
     @property
     def _exists(self):
         try:
-            result = self._subscription._sms.get_hosted_service_properties(
+            self._subscription._sms.get_hosted_service_properties(
                 service_name=self._name)
             return True    # already exists
         except Exception as e:
@@ -536,7 +536,7 @@ class AzureStorageAccount:
 
     def _exists(self):
         try:
-            result = self._subscription._sms.get_storage_account_properties(
+            self._subscription._sms.get_storage_account_properties(
                 service_name=self._name)
             # TODO dsteinkraus - make sure it's actually one of ours
             return True
@@ -657,7 +657,7 @@ class AzureVNet:
                        self._subscription._subscription_id
                 xml = self._create_vnet_to_xml(
                     location=self._config._location, vnet_name=self._name)
-                result = _rest_put(self._subscription, path, xml)
+                _rest_put(self._subscription, path, xml)
                 log.debug('created vnet %s', self._name)
             except Exception as e:
                 err = 'error in _create_virtual_network: %s' % e
@@ -846,9 +846,9 @@ class AzureVM:
                 with self._cloud_service._resource_lock:
                     self._cloud_service._instances[self._qualified_name] = self
 
-                # need to find the disk name for the OS disk attached to this vm.
-                # this involves redundant work that should be dealt with if it's
-                # a problem.
+                # need to find the disk name for the OS disk attached
+                # to this vm. this involves redundant work that should
+                # be dealt with if it's a problem.
                 self._subscription._find_os_disks()
                 return
             except Exception as e:
@@ -1291,9 +1291,7 @@ class AzureCloudProvider(AbstractCloudProvider):
                     sa._delete()
                     log.debug("Deleted storage account '%s'" % sa._name)
 
-            self._subscriptions[0]._vnet._delete() # no-op at present
-
-
+            self._subscriptions[0]._vnet._delete()  # no-op at present
         except Exception as e:
             log.error('_delete_global_reqs error: %s' % e)
             raise
