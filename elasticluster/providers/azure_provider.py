@@ -30,8 +30,9 @@ DEFAULT_WAIT_TIMEOUT = 600
 WAIT_RESULT_SLEEP = 10
 VNET_NS = 'http://schemas.microsoft.com/ServiceHosting' \
           '/2011/07/NetworkConfiguration'
-VM_RETRIES = 10
-VM_RETRY_SLEEP = 20
+# general-purpose retry parameters
+RETRIES = 10
+RETRY_SLEEP = 20
 
 # resource-management constants
 VMS_PER_CLOUD_SERVICE = 20
@@ -43,10 +44,10 @@ CLOUD_SERVICES_PER_SUBSCRIPTION = 20
 
 
 def _run_command(args):
-    p = subprocess.Popen(
+    proc = subprocess.Popen(
         args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = p.communicate()
-    return p.returncode, stdout, stderr
+    stdout, stderr = proc.communicate()
+    return proc.returncode, stdout, stderr
 
 
 def _check_positive_integer(name, value):
@@ -65,12 +66,45 @@ def _check_positive_integer(name, value):
     return ret
 
 
-def ceil_div(a, b):
-    return int(ceil(float(a) / b))
+def ceil_div(aaa, bbb):
+    return int(ceil(float(aaa) / bbb))
 
 
-def floor_div(a, b):
-    return int(floor(float(a) / b))
+def floor_div(aaa, bbb):
+    return int(floor(float(aaa) / bbb))
+
+
+def _create_fingerprint_and_signature(cert_path):
+    rtc, stdout, stderr = _run_command(
+        ['openssl', 'x509', '-in', cert_path, '-fingerprint', '-noout'])
+    if rtc != 0:
+        err = "error getting fingerprint " \
+              "from cert %s: %s" % (cert_path, stderr)
+        log.error(err)
+        raise Exception(err)
+    fingerprint = stdout.strip()[17:].replace(':', '')
+    rtc, stdout, stderr = _run_command(
+        ['openssl', 'pkcs12', '-export', '-in', cert_path,
+         '-nokeys', '-password', 'pass:'])
+    if rtc != 0:
+        err = "error getting pkcs12 signature " \
+              "from cert_path %s: %s" % (cert_path, stderr)
+        log.error(err)
+        raise Exception(err)
+    signature = base64.b64encode(stdout.strip())
+    return fingerprint, signature
+
+
+def _create_rsa_fingerprint(key_path):
+    rtc, stdout, stderr = _run_command(
+        ['ssh-keygen', '-lf', key_path])
+    if rtc != 0:
+        err = "error getting fingerprint " \
+              "from RSA key %s: %s" % (key_path, stderr)
+        log.error(err)
+        raise Exception(err)
+    fingerprint = stdout.strip()[5:52].replace(':', '')
+    return fingerprint
 
 
 def _rest_put(subscription, path, xml):
@@ -89,7 +123,14 @@ def _rest_put(subscription, path, xml):
     return response
 
 
-class AzureGlobalConfig:
+def check_response(response):
+    if not response:
+        raise Exception("empty response")
+    if response.status != 200:
+        raise Exception("response status %s" % response.status)
+
+
+class AzureGlobalConfig(object):
 
     """Manage all the settings for an Azure cluster which are
     global as opposed to node-specific.
@@ -112,6 +153,7 @@ class AzureGlobalConfig:
                     config=self,
                     subscription_id=subscription_id,
                     certificate=certificate, index=0))
+        self._storage_path = storage_path
 
         self._key_name = None
         self._public_key_path = None
@@ -125,6 +167,13 @@ class AzureGlobalConfig:
         self._n_storage_accounts = None
         self._n_vms_requested = None
         self._n_subscriptions = None
+        self._cs_per_sub = None
+        self._sa_per_sub = None
+        self._security_group = None
+        self._wait_timeout = None
+        self._vm_per_cs = None
+        self._vm_per_sub = None
+        self._vm_per_sa = None
 
     # called when the first node is about to be created. this is where
     # we get most of the config info
@@ -270,33 +319,33 @@ class AzureGlobalConfig:
                 ids.add(self._parent._subscriptions[0]._subscription_id)
             try:
                 pattern = re.compile(
-                    'subscription_id=(\S*)\s+certificate=(.*)')
-                with open(self._subscription_file) as f:
-                    for line in f:
-                        m = pattern.match(line)
-                        if m:
-                            if m.group(1) in ids:
+                    r'subscription_id=(\S*)\s+certificate=(.*)')
+                with open(self._subscription_file) as fhl:
+                    for line in fhl:
+                        match = pattern.match(line)
+                        if match:
+                            if match.group(1) in ids:
                                 log.debug('subscription_id %s has already been'
-                                          ' read. ignoring.' % m.group(1))
+                                          ' read. ignoring.', match.group(1))
                             else:
-                                ids.add(m.group(1))
+                                ids.add(match.group(1))
                                 index = len(self._parent._subscriptions)
                                 self._parent._subscriptions.append(
-                                    AzureSubscription(config=self,
-                                                      subscription_id=m.group(
-                                                          1),
-                                                      certificate=m.group(2),
-                                                      index=index))
+                                    AzureSubscription(
+                                        config=self,
+                                        subscription_id=match.group(1),
+                                        certificate=match.group(2),
+                                        index=index))
                         else:
                             log.debug(
-                                'ignoring line in subscription_file %s: %s' %
-                                (self._subscription_file, line))
-            except Exception as e:
-                log.error('error parsing subscription file %s: %s' %
-                          (self._subscription_file, e))
+                                'ignoring line in subscription_file %s: %s',
+                                self._subscription_file, line)
+            except Exception as exc:
+                log.error('error parsing subscription file %s: %s',
+                          self._subscription_file, exc)
 
 
-class AzureSubscription:
+class AzureSubscription(object):
 
     def __init__(self, config, subscription_id, certificate, index):
         self._do_cleanup = False    # never delete a subscription
@@ -310,23 +359,12 @@ class AzureSubscription:
         self._cloud_services = list()
         self._vnet = None
 
-        rc, stdout, stderr = _run_command(
-            ['openssl', 'x509', '-in', self._certificate,
-             '-fingerprint', '-noout'])
-        if rc != 0:
-            err = "error getting fingerprint: %s" % stderr
-            log.error(err)
-            raise Exception(err)
-        self._fingerprint = stdout.strip()[17:].replace(':', '')
-
-        rc, stdout, stderr = _run_command(
-            ['openssl', 'pkcs12', '-export', '-in', self._certificate,
-             '-nokeys', '-password', 'pass:'])
-        if rc != 0:
-            err = "error getting pkcs12 signature: %s" % stderr
-            log.error(err)
-            raise Exception(err)
-        self._pkcs12_base64 = base64.b64encode(stdout.strip())
+        # create fingerprint and signature from subscription cert, to
+        # be added to cloud services/vms
+        fingerprint, signature = _create_fingerprint_and_signature(
+            self._certificate)
+        self._fingerprint = fingerprint
+        self._pkcs12_base64 = signature
 
     @property
     def _resource_lock(self):
@@ -342,8 +380,8 @@ class AzureSubscription:
                     self._sms_internal = \
                         azure.servicemanagement.ServiceManagementService(
                             self._subscription_id, self._certificate)
-                except Exception as e:
-                    log.error('error initializing azure serice: %s' % e)
+                except Exception as exc:
+                    log.error('error initializing azure serice: %s', exc)
                     raise
             return self._sms_internal
 
@@ -378,10 +416,10 @@ class AzureSubscription:
         raise CloudProviderError(err)
 
     def __getstate__(self):
-        d = self.__dict__.copy()
-        del d['_resource_lock_internal']
-        del d['_sms_internal']
-        return d
+        dct = self.__dict__.copy()
+        del dct['_resource_lock_internal']
+        del dct['_sms_internal']
+        return dct
 
     def __setstate__(self, state):
         self.__dict__ = state
@@ -394,18 +432,18 @@ class AzureSubscription:
             disks = self._sms.list_disks()
             for disk in disks:
                 for cloud_service in self._cloud_services:
-                    for vm_name, vm in cloud_service._instances.iteritems():
-                        if vm._os_vhd_name:
+                    for vm_name, v_m in cloud_service._instances.iteritems():
+                        if v_m._os_vhd_name:
                             continue
                         if vm_name in disk.name and \
                                 self._config._base_name in disk.name:
-                            vm._os_vhd_name = disk.name
-        except Exception as e:
-            log.error('error in _find_os_disks: %s' % e)
+                            v_m._os_vhd_name = disk.name
+        except Exception as exc:
+            log.error('error in _find_os_disks: %s', exc)
             raise
 
 
-class AzureCloudService:
+class AzureCloudService(object):
 
     def __init__(self, config, subscription, index):
         self._do_cleanup = False
@@ -437,11 +475,12 @@ class AzureCloudService:
         try:
             self._subscription._sms.get_hosted_service_properties(
                 service_name=self._name)
-            return True    # already exists
-        except Exception as e:
-            if str(e) != 'Not found (Not Found)':
-                log.error('error checking for cloud service %s: %s' %
-                          (self._name, str(e)))
+            log.debug("cloud service %s exists", self._name)
+            return True
+        except Exception as exc:
+            if str(exc) != 'Not found (Not Found)':
+                log.error('error checking for cloud service %s: %s',
+                          self._name, str(exc))
                 raise
         return False
 
@@ -453,25 +492,24 @@ class AzureCloudService:
                     label=self._name,
                     location=self._location)
                 self._subscription._wait_result(result)
-            except Exception as e:
+            except Exception as exc:
                 # this shouldn't happen
                 # if str(e) == 'Conflict (Conflict)':
                 #    return False
-                log.error('error creating cloud service %s: %s' %
-                          (self._name, e))
+                log.error('error creating cloud service %s: %s',
+                          self._name, exc)
                 raise
 
     def _delete(self):
         if self._deployment:
             log.error("can't delete cloud service %s. It contains a "
-                      "deployment and at least one node." % self._name)
+                      "deployment and at least one node.", self._name)
             return False
         try:
             self._subscription._sms.delete_hosted_service(
                 service_name=self._name)
-        except Exception as e:
-            log.error('error deleting cloud service %s: %s' %
-                      (self._name, e))
+        except Exception as exc:
+            log.error('error deleting cloud service %s: %s', self._name, exc)
             raise
         return True
 
@@ -483,9 +521,9 @@ class AzureCloudService:
                 service_name=self._name,
                 deployment_name=self._name)
             self._subscription._wait_result(result)
-        except Exception as e:
-            log.error('error deleting deployment from cloud service %s: %s' %
-                      (self._name, e))
+        except Exception as exc:
+            log.error('error deleting deployment from cloud service %s: %s',
+                      self._name, exc)
             raise
 
     @property
@@ -497,7 +535,7 @@ class AzureCloudService:
         except Exception as exc:
             if str(exc) == 'Not found (Not Found)':
                 return None
-            log.error('error getting deployment %s: %s' % (self._name, exc))
+            log.error('error getting deployment %s: %s', self._name, exc)
             raise
 
     def _add_certificate(self):
@@ -507,16 +545,16 @@ class AzureCloudService:
         self._subscription._wait_result(result)
 
     def __getstate__(self):
-        d = self.__dict__.copy()
-        del d['_resource_lock_internal']
-        return d
+        dct = self.__dict__.copy()
+        del dct['_resource_lock_internal']
+        return dct
 
     def __setstate__(self, state):
         self.__dict__ = state
         self._resource_lock_internal = None
 
 
-class AzureStorageAccount:
+class AzureStorageAccount(object):
 
     def __init__(self, config, subscription, index):
         self._do_cleanup = False
@@ -538,12 +576,16 @@ class AzureStorageAccount:
         try:
             self._subscription._sms.get_storage_account_properties(
                 service_name=self._name)
-            # TODO dsteinkraus - make sure it's actually one of ours
+            # note - this will only find a storage account of the given name
+            # within this subscription. Doesn't guarantee the name isn't in
+            # use anywhere in Azure, so be cautious with the result from
+            # this method.
+            log.debug("storage account %s exists", self._name)
             return True
-        except Exception as e:
-            if str(e) != 'Not found (Not Found)':
-                log.error('error checking for storage account %s: %s' %
-                          (self._name, str(e)))
+        except Exception as exc:
+            if str(exc) != 'Not found (Not Found)':
+                log.error('error checking for storage account %s: %s',
+                          self._name, str(exc))
                 raise
             return False
 
@@ -560,11 +602,14 @@ class AzureStorageAccount:
                 # this seems to be taking much longer than the others...
                 self._subscription._wait_result(
                     result, self._config._wait_timeout * 10)
-            except Exception as e:
-                # this shouldn't happen
-                # if str(e) == 'Conflict (Conflict)':
-                #    return False
-                log.error('error creating storage account: %s' % str(e))
+            except Exception as exc:
+                # this probably means that there is a storage account with
+                # the requested name in Azure, but not in this subscription.
+                if str(exc) == 'Conflict (Conflict)':
+                    log.error("Storage account %s already exists in Azure (may"
+                              " be in some other subscription)", self._name)
+                log.error('error creating storage account %s: %s',
+                          self._name, str(exc))
                 raise
 
     def _delete(self):
@@ -572,8 +617,7 @@ class AzureStorageAccount:
             self._subscription._sms.delete_storage_account(
                 service_name=self._name)
         except Exception as exc:
-            log.error('error deleting storage account %s: %s' %
-                      (self._name, exc))
+            log.error('error deleting storage account %s: %s', self._name, exc)
             raise
 
     def _create_vhd(self, node_name, image_id):
@@ -590,14 +634,14 @@ class AzureStorageAccount:
                 # ready to be deleted yet
                 self._subscription._sms.delete_disk(
                     disk_name=name, delete_vhd=True)
-                log.debug('_delete_vhd %s: success on attempt %i' %
-                          (name, attempt))
+                log.debug('_delete_vhd %s: success on attempt %i',
+                          name, attempt)
                 return
-            except Exception as e:
-                if str(e) == 'Not found (Not Found)':
+            except Exception as exc:
+                if str(exc) == 'Not found (Not Found)':
                     log.debug(
                         "_delete_vhd: 'not found' deleting %s, assuming "
-                        "success" % name)
+                        "success", name)
                     return
                 # log.error('_delete_vhd: error on attempt #%i to delete disk
                 # %s: %s' % (attempt, name, e))
@@ -607,16 +651,16 @@ class AzureStorageAccount:
         raise Exception(err)
 
     def __getstate__(self):
-        d = self.__dict__.copy()
-        del d['_resource_lock_internal']
-        return d
+        dct = self.__dict__.copy()
+        del dct['_resource_lock_internal']
+        return dct
 
     def __setstate__(self, state):
         self.__dict__ = state
         self._resource_lock_internal = None
 
 
-class AzureVNet:
+class AzureVNet(object):
 
     def __init__(self, config, subscription, index):
         self._do_cleanup = False
@@ -626,6 +670,7 @@ class AzureVNet:
         self._name = "%s0su%ivn%i" % (
             self._config._base_name, self._subscription._index, self._index)
         self._resource_lock_internal = None
+        # location comes from config
 
     @property
     def _resource_lock(self):
@@ -639,6 +684,7 @@ class AzureVNet:
             if len(result):
                 for virtual_network_site in result.virtual_network_sites:
                     if virtual_network_site.name == self._name:
+                        log.debug("vnet %s exists", self._name)
                         return True
                 return False
             else:
@@ -648,92 +694,223 @@ class AzureVNet:
                       self._name, exc)
             raise
 
-    def _create(self):
-        if not self._exists():
+    @property
+    def _path(self):
+        return "/%s/services/networking/media" % \
+               self._subscription._subscription_id
+
+    def _get_xml(self):
+        # get the xml defining the current vnet config for the whole
+        # subscription.
+        attempt = 0
+        while attempt < RETRIES:
             try:
-                # note that this is replacing the whole network config,
-                # so would succeed even if vnet already existed
-                path = "/%s/services/networking/media" % \
-                       self._subscription._subscription_id
-                xml = self._create_vnet_to_xml(
-                    location=self._config._location, vnet_name=self._name)
-                _rest_put(self._subscription, path, xml)
+                response = self._subscription._sms.perform_get(self._path)
+                check_response(response)
+                return response.body
+            except Exception as exc:
+                if str(exc) == 'Not found (Not Found)':
+                    return None
+                log.error('error in _get_xml for vnet %s '
+                          '(attempt %i of %i): %s',
+                          self._name, attempt, RETRIES, exc)
+            time.sleep(RETRY_SLEEP)
+            attempt += 1
+        err = "AzureVNet %s _get_xml: giving up after %i attempts" % \
+              (self._name, RETRIES)
+        log.error(err)
+        raise Exception(err)
+
+    def _create(self):
+        if self._exists():
+            return
+        tree = None
+        xml = None
+        self._register_namespaces()
+        try:
+            # since we will be rewriting the whole network config, first
+            # we need to get the xml for any existing vnets, and if
+            # there is any, fold ours in.
+            prior_xml = self._get_xml()
+            if prior_xml:
+                # vnets already defined (possibly including ours, although
+                # it shouldn't be - we already checked)
+                # search for ours
+                tree = xmltree.fromstring(prior_xml)
+                config = tree.find(
+                    self._deco('VirtualNetworkConfiguration'))
+                sites = config.find(self._deco('VirtualNetworkSites'))
+                for site in sites.findall(
+                        self._deco('VirtualNetworkSite')):
+                    if site.get('name') == self._name:
+                        if site.get('location') == self._config._location:
+                            log.warn("unexpected: found in xml: vnet %s with "
+                                     "location %s",
+                                     self._name, self._config._location)
+                        else:
+                            log.warn("vnet %s found in xml, but location "
+                                     "is %s (expected %s)", self._name,
+                                     site.get('location'),
+                                     self._config._location)
+                        return
+            else:
+                # no vnets defined. just add ours
+                prior_xml = self._empty_network_config_xml()
+                tree = xmltree.fromstring(prior_xml)
+                config = tree.find(
+                    self._deco('VirtualNetworkConfiguration'))
+                sites = config.find(self._deco('VirtualNetworkSites'))
+
+            subtree = self._make_vnet_subtree()
+            sites.append(subtree)
+            xml = xmltree.tostring(tree)
+        except Exception as exc:
+            err = 'error preparing AzureVNet _create: %s' % exc
+            log.error(err)
+            raise
+        # replace the whole network config,
+        attempt = 0
+        while attempt < RETRIES:
+            try:
+                response = _rest_put(self._subscription, self._path, xml)
+                result = azure.servicemanagement.AsynchronousOperationResult()
+                if response.headers:
+                    for name, value in response.headers:
+                        if name.lower() == 'x-ms-request-id':
+                            result.request_id = value
+                self._subscription._wait_result(
+                    result, self._config._wait_timeout)
                 log.debug('created vnet %s', self._name)
-            except Exception as e:
-                err = 'error in _create_virtual_network: %s' % e
-                log.error(err)
-                raise
+                return
+            except Exception as exc:
+                if 'validation error' in str(exc):
+                    err = 'fatal error in _create for vnet %s: %s' \
+                          % (self._name, exc)
+                    log.error(err)
+                    raise  # no point retrying
+                log.error('error in _create for vnet %s '
+                          '(attempt %i of %i): %s',
+                          self._name, attempt, RETRIES, exc)
+            time.sleep(RETRY_SLEEP)
+            attempt += 1
+        err = "AzureVNet %s _delete: giving up after %i attempts" % \
+              (self._name, RETRIES)
+        log.error(err)
+        raise Exception(err)
 
     def _delete(self):
-        if self._exists():
-            # TODO dsteinkraus - to have full support for creating and
-            # deleting a vnet while a subscription has other vnets, we
-            # would need to download current config, remove or add the
-            # vnet we want to change, and re-upload the config. Not sure
-            # how useful this would be, since it's easy to create a new
-            # subscription for a project and just use one vnet in that
-            # subscription.
+        if not self._exists():
             return
-
-    def _deco(self, str):
-        return '{%s}%s' % (VNET_NS, str)
-
-    def _create_vnet_to_xml(self, location, vnet_name):
+        tree = None
+        xml = None
+        self._register_namespaces()
+        found = None
         try:
-            template = "<NetworkConfiguration xmlns:xsd=\"http://www.w3.org/" \
-                       "2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/" \
-                       "XMLSchema-instance\" xmlns=\"http://schemas." \
-                       "microsoft.com/ServiceHosting/2011/07/" \
-                       "NetworkConfiguration\">"
-            template = template + """
+            prior_xml = self._get_xml()  # should exist
+            # search for ours
+            tree = xmltree.fromstring(prior_xml)
+            config = tree.find(
+                self._deco('VirtualNetworkConfiguration'))
+            sites = config.find(self._deco('VirtualNetworkSites'))
+            for site in sites.findall(self._deco('VirtualNetworkSite')):
+                if site.get('name') == self._name:
+                    if site.get('Location') != self._config._location:
+                        log.warn("vnet %s found in xml, but location is %s "
+                                 "(expected %s)", self._name,
+                                 site.get('location'), self._config._location)
+                    sites.remove(site)
+                    found = True
+                    break
+            if not found:
+                raise Exception("AzureVNet _delete: vnet %s exists, but "
+                                "not found in xml" % self._name)
+            xml = xmltree.tostring(tree)
+        except Exception as exc:
+            err = 'error preparing AzureVNet _delete: %s' % exc
+            log.error(err)
+            raise
+        # replace the whole network config,
+        attempt = 0
+        while attempt < RETRIES:
+            try:
+                response = _rest_put(self._subscription, self._path, xml)
+                result = azure.servicemanagement.AsynchronousOperationResult()
+                if response.headers:
+                    for name, value in response.headers:
+                        if name.lower() == 'x-ms-request-id':
+                            result.request_id = value
+                self._subscription._wait_result(
+                    result, self._config._wait_timeout)
+                log.debug('deleted vnet %s', self._name)
+                return
+            except Exception as exc:
+                log.error('error in _delete for vnet %s '
+                          '(attempt %i of %i): %s',
+                          self._name, attempt, RETRIES, exc)
+            time.sleep(RETRY_SLEEP)
+            attempt += 1
+        err = "AzureVNet %s _delete: giving up after %i attempts" % \
+              (self._name, RETRIES)
+        log.error(err)
+        raise Exception(err)
+
+    @staticmethod
+    def _register_namespaces():
+        xmltree.register_namespace('', 'http://www.w3.org/2001/XMLSchema')
+        xmltree.register_namespace(
+            '', 'http://www.w3.org/2001/XMLSchema-instance')
+        xmltree.register_namespace('', VNET_NS)
+
+    @staticmethod
+    def _deco(strng):
+        return '{%s}%s' % (VNET_NS, strng)
+
+    # create a network config with no vnets
+    @staticmethod
+    def _empty_network_config_xml():
+        template = "<NetworkConfiguration xmlns:xsd=\"http://www.w3.org/" \
+                   "2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/" \
+                   "XMLSchema-instance\" xmlns=\"http://schemas." \
+                   "microsoft.com/ServiceHosting/2011/07/" \
+                   "NetworkConfiguration\">"
+        template = template + """
   <VirtualNetworkConfiguration>
     <Dns>
       <DnsServers>
       </DnsServers>
     </Dns>
     <VirtualNetworkSites>
-      <VirtualNetworkSite name="" Location="">
-        <AddressSpace>
-          <AddressPrefix>10.0.0.0/8</AddressPrefix>
-        </AddressSpace>
-        <Subnets>
-          <Subnet name="subnet1">
-            <AddressPrefix>10.0.0.0/11</AddressPrefix>
-          </Subnet>
-        </Subnets>
-        <DnsServersRef>
-        </DnsServersRef>
-      </VirtualNetworkSite>
     </VirtualNetworkSites>
   </VirtualNetworkConfiguration>
 </NetworkConfiguration>"""
-            xmltree.register_namespace('', 'http://www.w3.org/2001/XMLSchema')
-            xmltree.register_namespace(
-                '', 'http://www.w3.org/2001/XMLSchema-instance')
-            xmltree.register_namespace('', VNET_NS)
-            tree = xmltree.fromstring(template)
-            config = tree.find(self._deco('VirtualNetworkConfiguration'))
-            sites = config.find(self._deco('VirtualNetworkSites'))
-            site = sites.find(self._deco('VirtualNetworkSite'))
-            site.set('Location', location)
-            site.set('name', vnet_name)
-        except Exception as e:
-            log.error('_create_vnet_to_xml: %s' % e)
-            raise
-        print xmltree.tostring(tree)
-        return xmltree.tostring(tree)
+        return template
+
+    # create xml subtree for a vnet with our name and location
+    def _make_vnet_subtree(self):
+        subtree = xmltree.Element(self._deco('VirtualNetworkSite'))
+        subtree.set('name', self._name)
+        subtree.set('Location', self._config._location)
+        addrspace = xmltree.SubElement(subtree, self._deco('AddressSpace'))
+        prefix = xmltree.SubElement(addrspace, self._deco('AddressPrefix'))
+        prefix.text = '10.0.0.0/8'
+        subnets = xmltree.SubElement(subtree, self._deco('Subnets'))
+        subnet = xmltree.SubElement(subnets, self._deco('Subnet'))
+        subnet.set('name', 'subnet1')
+        subprefix = xmltree.SubElement(subnet, self._deco('AddressPrefix'))
+        subprefix.text = '10.0.0.0/11'
+        return subtree
 
     def __getstate__(self):
-        d = self.__dict__.copy()
-        del d['_resource_lock_internal']
-        return d
+        dct = self.__dict__.copy()
+        del dct['_resource_lock_internal']
+        return dct
 
     def __setstate__(self, state):
         self.__dict__ = state
         self._resource_lock_internal = None
 
 
-class AzureVM:
+class AzureVM(object):
 
     def __init__(
             self,
@@ -762,8 +939,8 @@ class AzureVM:
         # figure out what sub, cloud serv, stor acct to use if not specified
         if not self._cloud_service:
             parent = self._config._parent
-            (i_subscription, i_cloud_service, i_vm_in_cs, i_storage_account,
-             i_vm_in_sa) = self._config._vm_flat_to_resources(self._node_index)
+            (i_subscription, i_cloud_service, _, i_storage_account, _) = \
+                self._config._vm_flat_to_resources(self._node_index)
             self._subscription = parent._subscriptions[i_subscription]
             self._cloud_service = \
                 self._subscription._cloud_services[i_cloud_service]
@@ -778,8 +955,11 @@ class AzureVM:
         self._os_vhd_name = None
         self._created = False
         self._paused = False
+        self._system_config = None
+        self._network_config = None
 
     def _delete(self):
+        # this should have a retry loop
         try:
             if len(self._cloud_service._instances) == 1:
                 # we are the last node in this cloud service,
@@ -793,10 +973,9 @@ class AzureVM:
                 self._subscription._wait_result(result)
             self._storage_account._delete_vhd(self._os_vhd_name)
             with self._cloud_service._resource_lock:
-                del(self._cloud_service._instances[self._qualified_name])
-            # TODO - delete/reset our self?
-        except Exception as e:
-            log.error('error deleting vm %s: %s' % (self._qualified_name, e))
+                del self._cloud_service._instances[self._qualified_name]
+        except Exception as exc:
+            log.error('error deleting vm %s: %s', self._qualified_name, exc)
             raise
 
     def _start(self):
@@ -807,14 +986,14 @@ class AzureVM:
                 self._storage_account._create_vhd(self._node_name, self._image)
             virtual_network_name = \
                 self._config._parent._subscriptions[0]._vnet._name
-        except Exception as e:
-            log.error('error creating reqs for vm %s: %s'
-                      % (self._qualified_name, e))
+        except Exception as exc:
+            log.error('error creating reqs for vm %s: %s',
+                      self._qualified_name, exc)
             raise
 
         sms = self._cloud_service._subscription._sms
         attempt = 0
-        while attempt < VM_RETRIES:
+        while attempt < RETRIES:
             try:
                 if self._cloud_service._instances:
                     # add a node to existing deployement
@@ -846,21 +1025,25 @@ class AzureVM:
                 with self._cloud_service._resource_lock:
                     self._cloud_service._instances[self._qualified_name] = self
 
-                # need to find the disk name for the OS disk attached
-                # to this vm. this involves redundant work that should
-                # be dealt with if it's a problem.
+                # need to find the disk name for the OS disk attached to
+                # this vm. this involves redundant work that should be
+                # dealt with if it's a problem.
                 self._subscription._find_os_disks()
                 return
-            except Exception as e:
-                if str(e) == 'Conflict (Conflict)':
-                    log.debug('virtual machine %s already exists.'
-                              % self._qualified_name)
+            except Exception as exc:
+                if str(exc) == 'Conflict (Conflict)':
+                    log.debug('virtual machine %s already exists.',
+                              self._qualified_name)
                     raise   # no point in retrying
                 else:
-                    log.error('error creating vm %s (attempt %i of %i): %s'
-                              % (self._qualified_name, attempt, VM_RETRIES, e))
-            time.sleep(VM_RETRY_SLEEP)
+                    log.error('error creating vm %s (attempt %i of %i): %s',
+                              self._qualified_name, attempt, RETRIES, exc)
+            time.sleep(RETRY_SLEEP)
             attempt += 1
+        err = 'AzureVM start %s: giving up after %i attempts' % \
+              (self._qualified_name, RETRIES)
+        log.error(err)
+        raise Exception(err)
 
     def pause(self, instance_id, keep_provisioned=True):
         """shuts down the instance without destroying it.
@@ -874,30 +1057,22 @@ class AzureVM:
         :return: None
         """
         try:
-            node_info = self._instances.get(instance_id)
-            if node_info is None:
-                raise Exception(
-                    "could not get state for instance %s" % instance_id)
-            if node_info['PAUSED']:
-                log.debug("node %s is already paused" % instance_id)
+            if self._paused:
+                log.debug("node %s is already paused", instance_id)
                 return
-            if node_info.get('FIRST'):
-                # TODO - determine if any special logic needed for this
-                # node
-                pass
-            node_info['PAUSED'] = True
+            self._paused = True
             post_shutdown_action = 'Stopped' if keep_provisioned else \
                 'StoppedDeallocated'
-            result = self._sms[0].shutdown_role(
-                service_name=self._cloud_service_name,
-                deployment_name=self._deployment_name,
-                role_name=instance_id,
+            result = self._subscription._sms.shutdown_role(
+                service_name=self._cloud_service._name,
+                deployment_name=self._cloud_service._name,
+                role_name=self._qualified_name,
                 post_shutdown_action=post_shutdown_action)
             self._subscription._wait_result(result)
-        except Exception as e:
-            log.error("error pausing instance %s: %s" % (instance_id, e))
+        except Exception as exc:
+            log.error("error pausing instance %s: %s", instance_id, exc)
             raise
-        log.debug('paused instance(instance_id=%s)' % instance_id)
+        log.debug('paused instance(instance_id=%s)', instance_id)
 
     def restart(self, instance_id):
         """restarts a paused instance.
@@ -907,29 +1082,19 @@ class AzureVM:
         :return: None
         """
         try:
-            node_info = self._instances.get(instance_id)
-            if node_info is None:
-                raise Exception(
-                    "could not get state for instance %s" % instance_id)
-            if not node_info['PAUSED']:
-                log.debug(
-                    'node %s is not paused, can\'t restart' % instance_id)
+            if not self._paused:
+                log.debug("node %s is not paused, can't restart", instance_id)
                 return
-            if node_info.get('FIRST'):
-                # TODO - determine if any special logic needed for this
-                # node
-                pass
-            node_info['PAUSED'] = False
-            result = self._sms[0].start_role(
-                service_name=self._cloud_service_name,
-                deployment_name=self._deployment_name,
+            self._paused = False
+            result = self._subscription._sms.start_role(
+                service_name=self._cloud_service._name,
+                deployment_name=self._cloud_service._name,
                 role_name=instance_id)
             self._subscription._wait_result(result)
-        except Exception as e:
-            log.error('error restarting instance %s: %s' %
-                      (instance_id, e))
+        except Exception as exc:
+            log.error('error restarting instance %s: %s', instance_id, exc)
             raise
-        log.debug('restarted instance(instance_id=%s)' % instance_id)
+        log.debug('restarted instance(instance_id=%s)', instance_id)
 
     def _create_network_config(self):
         # Create linux configuration
@@ -1031,9 +1196,9 @@ class AzureCloudProvider(AbstractCloudProvider):
         `setup` section in the configuration file.
         """
         # Paramiko debug level
-        # import logging
-        # logging.getLogger('paramiko').setLevel(logging.DEBUG)
-        # logging.basicConfig(level=logging.DEBUG)
+        import logging
+        logging.getLogger('paramiko').setLevel(logging.DEBUG)
+        logging.basicConfig(level=logging.DEBUG)
 
         # for winpdb debugging
         # import rpdb2
@@ -1122,7 +1287,7 @@ class AzureCloudProvider(AbstractCloudProvider):
                 if self._start_failed:
                     return None
 
-            vm = AzureVM(
+            v_m = AzureVM(
                 self._config,
                 index,
                 flavor=flavor,
@@ -1131,9 +1296,13 @@ class AzureCloudProvider(AbstractCloudProvider):
                 host_name=host_name,
                 image_userdata=image_userdata)
 
-            vm._start()
-            log.debug('started instance %s' % vm._qualified_name)
-            return vm._qualified_name
+            try:
+                v_m._start()
+            except Exception:
+                self._start_failed = True
+                return None
+            log.debug('started instance %s', v_m._qualified_name)
+            return v_m._qualified_name
 
     def stop_instance(self, instance_id):
         """Stops the instance gracefully.
@@ -1148,12 +1317,12 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         with self._resource_lock:
             try:
-                vm = self._qualified_name_to_vm(instance_id)
-                if not vm:
+                v_m = self._qualified_name_to_vm(instance_id)
+                if not v_m:
                     err = "stop_instance: can't find instance %s" % instance_id
                     log.error(err)
                     raise Exception(err)
-                vm._delete()
+                v_m._delete()
                 # note: self._n_instances is a derived property, doesn't need
                 # to be updated
                 if self._n_instances == 0:
@@ -1161,10 +1330,9 @@ class AzureCloudProvider(AbstractCloudProvider):
                               'global resources')
                     self._delete_global_reqs()
             except Exception as exc:
-                log.error('error stopping instance %s: %s' %
-                          (instance_id, exc))
+                log.error('error stopping instance %s: %s', instance_id, exc)
                 raise
-        log.debug('stopped instance %s' % instance_id)
+        log.debug('stopped instance %s', instance_id)
 
     def get_ips(self, instance_id):
         """Retrieves the private and public ip addresses for a given instance.
@@ -1185,16 +1353,16 @@ class AzureCloudProvider(AbstractCloudProvider):
                             ' previous errors.' % instance_id)
 
         ret = list()
-        vm = self._qualified_name_to_vm(instance_id)
-        if not vm:
+        v_m = self._qualified_name_to_vm(instance_id)
+        if not v_m:
             raise Exception("Can't find instance_id %s" % instance_id)
         if self._config._use_public_ips:
-            ret.append(vm._public_ip)
+            ret.append(v_m._public_ip)
         else:
-            ret.append("%s:%s" % (vm._public_ip, vm._ssh_port))
+            ret.append("%s:%s" % (v_m._public_ip, v_m._ssh_port))
 
-        log.debug('get_ips (instance %s) returning %s' %
-                  (instance_id, ', '.join(ret)))
+        log.debug('get_ips (instance %s) returning %s',
+                  instance_id, ', '.join(ret))
         return ret
 
     def is_instance_running(self, instance_id):
@@ -1208,10 +1376,10 @@ class AzureCloudProvider(AbstractCloudProvider):
             raise Exception('is_instance_running for node %s: failing due to'
                             ' previous errors.' % instance_id)
 
-        vm = self._qualified_name_to_vm(instance_id)
-        if not vm:
+        v_m = self._qualified_name_to_vm(instance_id)
+        if not v_m:
             raise Exception("Can't find instance_id %s" % instance_id)
-        return vm._power_state == 'Started'
+        return v_m._power_state == 'Started'
 
     # ------------------ add-on methods ---------------------------------
     # (not part of the base class, but useful extensions)
@@ -1232,12 +1400,11 @@ class AzureCloudProvider(AbstractCloudProvider):
         return ret
 
     def _qualified_name_to_vm(self, qualified_name):
-        i_sub, i_cs, i_vm_in_cs, _, _ = \
+        i_sub, i_cs, _, _, _ = \
             self._config._vm_name_to_resources(qualified_name)
-        cs = self._subscriptions[i_sub]._cloud_services[i_cs]
-        # TODO can't lock use be confined to its class?
-        with cs._resource_lock:
-            return cs._instances[qualified_name]
+        c_s = self._subscriptions[i_sub]._cloud_services[i_cs]
+        with c_s._resource_lock:
+            return c_s._instances[qualified_name]
 
     def _create_global_reqs(self):
         try:
@@ -1247,7 +1414,7 @@ class AzureCloudProvider(AbstractCloudProvider):
                 acs = AzureCloudService(self._config, sub, index)
                 acs._create()
                 acs._add_certificate()
-                log.debug("Created cloud service %i (%s)" % (index, acs._name))
+                log.debug("Created cloud service %i (%s)", index, acs._name)
                 sub._cloud_services.append(acs)
 
             for index in range(self._config._n_storage_accounts):
@@ -1255,8 +1422,7 @@ class AzureCloudProvider(AbstractCloudProvider):
                 sub = self._subscriptions[i_sub]
                 asa = AzureStorageAccount(self._config, sub, index)
                 asa._create()
-                log.debug("Created storage account %i (%s)" %
-                          (index, asa._name))
+                log.debug("Created storage account %i (%s)", index, asa._name)
                 sub._storage_accounts.append(asa)
 
             # one vnet should be enough for ~ 1000 vms. Tie it to
@@ -1266,8 +1432,8 @@ class AzureCloudProvider(AbstractCloudProvider):
             sub._vnet._create()
             # getting failures if we try to use the VNet right away, so:
             time.sleep(WAIT_RESULT_SLEEP)
-        except Exception as e:
-            log.error('_create_global_reqs error: %s' % e)
+        except Exception as exc:
+            log.error('_create_global_reqs error: %s', exc)
             self._start_failed = True
             raise
 
@@ -1277,32 +1443,33 @@ class AzureCloudProvider(AbstractCloudProvider):
     def _delete_global_reqs(self):
         try:
             for sub in self._subscriptions:
-                for cs in sub._cloud_services:
-                    if cs._instances:
+                for c_s in sub._cloud_services:
+                    if c_s._instances:
                         err = "cloud service %s can't be destroyed, it " \
                               "still has %i vms." % \
-                              (cs._name, len(cs._instances))
+                              (c_s._name, len(c_s._instances))
                         log.error(err)
                         raise Exception(err)
-                    cs._delete()
-                    log.debug("Deleted cloud service '%s'" % cs._name)
+                    c_s._delete()
+                    log.debug("Deleted cloud service '%s'", c_s._name)
 
-                for sa in self._storage_accounts:
-                    sa._delete()
-                    log.debug("Deleted storage account '%s'" % sa._name)
-
-            self._subscriptions[0]._vnet._delete()  # no-op at present
-        except Exception as e:
-            log.error('_delete_global_reqs error: %s' % e)
+                for s_a in self._storage_accounts:
+                    s_a._delete()
+                    log.debug("Deleted storage account '%s'", s_a._name)
+            self._subscriptions[0]._vnet._delete()
+        except Exception as exc:
+            log.error('_delete_global_reqs error: %s', exc)
             raise
 
     # methods to support pickling
 
     def __getstate__(self):
-        d = self.__dict__.copy()
-        del d['_resource_lock_internal']
-        return d
+        dct = self.__dict__.copy()
+        del dct['_resource_lock_internal']
+        del dct['_start_failed']
+        return dct
 
     def __setstate__(self, state):
         self.__dict__ = state
         self._resource_lock_internal = None
+        self._start_failed = False
