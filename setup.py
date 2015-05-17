@@ -53,6 +53,8 @@ required_packages = [
     'PyCLI',
     'paramiko',
     'ansible',
+    'azure',
+    'cryptography',
     'voluptuous',
     'configobj',
     # EC2 clouds
@@ -73,15 +75,14 @@ if sys.version_info[:2] == (2, 6):
     required_packages.append('argparse')
 
 setup(
-    name="elasticluster",
-    version="1.3-dev",
-    description="A command line tool to create, manage and setup computing clusters hosted on a public or private cloud infrastructure.",
+    name="azure-elasticluster",
+    version="0.2.dev6",
+    description="A fork of elasticluster with Azure support",
     long_description=open('README.rst').read(),
-    author="Grid Computing Competence Centre, University of Zurich",
-    author_email="info@gc3.lists.uzh.ch",
+    author="dsteinkraus",
+    author_email="dsteinkraus@users.noreply.github.com",
     license="LGPL",
-    keywords="cloud openstack amazon ec2 ssh hpc gridengine torque slurm batch job elastic",
-    url="https://github.com/gc3-uzh-ch/elasticluster",
+    url="https://github.com/bobd00/elasticluster",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Environment :: Console",
