@@ -52,7 +52,7 @@ from setuptools import setup, find_packages
 required_packages = [
     'PyCLI',
     'paramiko',
-    'ansible',
+    'azure-ansible',
     'azure',
     'cryptography',
     'voluptuous',
