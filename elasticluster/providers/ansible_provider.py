@@ -249,6 +249,12 @@ class AnsibleSetupProvider(AbstractSetupProvider):
         for node in cluster.get_all_nodes():
             if node.kind in self.groups:
                 extra_vars = ['ansible_ssh_user=%s' % node.image_user]
+                # handle nonstandard port
+                if node.preferred_ip and ':' in node.preferred_ip:
+                    host_addr, _, host_port = node.preferred_ip.partition(':')
+                    if host_port:
+                        extra_vars.append('ansible_ssh_port=%s' % host_port)
+
                 if node.kind in self.environment:
                     extra_vars.extend('%s=%s' % (k, v) for k, v in
                                       self.environment[node.kind].items())
@@ -276,6 +282,9 @@ class AnsibleSetupProvider(AbstractSetupProvider):
                 inventory_fd.write("\n[" + section + "]\n")
                 if hosts:
                     for host in hosts:
+                        # don't want port, makes it look like ipv6
+                        if ':' in host[1]:
+                            host = (host[0], host[1].partition(':')[0], host[2])
                         hostline = "%s ansible_ssh_host=%s %s\n" \
                                    % host
                         inventory_fd.write(hostline)
