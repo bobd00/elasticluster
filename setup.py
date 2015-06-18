@@ -52,7 +52,7 @@ from setuptools import setup, find_packages
 required_packages = [
     'PyCLI',
     'paramiko',
-    'azure-ansible',
+    'ansible==1.7.2',
     'azure',
     'cryptography',
     'voluptuous',
@@ -67,7 +67,6 @@ required_packages = [
     'httplib2',
     'python-gflags',
     'pbr==0.11',
-    'azure-ansible',
 ]
 
 if sys.version_info[:2] == (2, 6):
@@ -78,7 +77,7 @@ if sys.version_info[:2] == (2, 6):
 
 setup(
     name="azure-elasticluster",
-    version="0.2.dev9",
+    version="0.3.dev2",
     description="A fork of elasticluster with Azure support",
     long_description=open('README.rst').read(),
     author="dsteinkraus",

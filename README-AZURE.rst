@@ -6,9 +6,16 @@ Testing gridengine + elasticluster + Azure
    http://docutils.sf.net/rst.html for more information
 
 
-Dave Steinkraus / Trevor Eberl 5/18/2015
+Dave Steinkraus / Trevor Eberl 6/18/2015
 
 This document, and the Azure provider for elasticluster, are works in progress. Expect changes.
+
+Notes about this version: The basis for this code is elasticluster 1.3.dev0 (which is known to be compatible with bcbio_vm at this time).
+This is not the current version of elasticluster. Another branch/PyPI package will be created based on the current version.
+
+This older version of elasticluster is not compatible with the latest Ansible. So, setup.py for this project requires Ansible 1.7.2.
+
+The azure-ansible fork of Ansible is no longer needed, and should be uninstalled if present.
 
 In this guide, we'll walk through all the steps to:
 
@@ -22,13 +29,17 @@ In this guide, we'll walk through all the steps to:
 ::
 
 	sudo apt-get update
-	sudo apt-get install git python-pip python-dev build-essential python-virtualenv \
+	sudo apt-get install git python-pip python-dev build-essential \
 		libssl-dev libffi-dev nodejs-legacy
 	sudo apt-get install npm -y
 	sudo apt-get install libxml2-dev libxslt1-dev
+	# these two steps are only needed if you want to run in a virtual Python environment:
+	sudo apt-get install python-virtualenv
 	sudo pip install virtualenvwrapper
 
-2. Create and enter a virtual environment (this is strongly recommended, since you will be installing nonstandard forks of ansible and elasticluster):
+2. If you wish, create and enter a virtual Python environment. If installing on a computer that is also used for other purposes, 
+this is strongly recommended, since you will be installing a nonstandard fork of elasticluster, and keeping the system Python clean
+is a good general practice. If installing on a computer (or virtual machine) that is dedicated to this task, you can skip to step 3:
 
 ::
 
@@ -38,8 +49,10 @@ In this guide, we'll walk through all the steps to:
 	mkvirtualenv elasticluster
 	workon elasticluster
 	cdvirtualenv
+	# note that the following command will make the wrapper commands (workon, etc.) available in the future:
+	# echo "source /usr/local/bin/virtualenvwrapper.sh" >> $HOME/.bashrc
 
-3. Install the specific Python packages for this test scenario into the virtualenv:
+3. Install the specific Python packages for this test scenario:
 
 ::
 
@@ -47,13 +60,14 @@ In this guide, we'll walk through all the steps to:
 
 The Microsoft Azure SDK for Python will be automatically installed by the azure-elasticluster package. For more information see: https://github.com/Azure/azure-sdk-for-python/
 
-These are the forked versions of elasticluster and Ansible that support Azure (for testing until those groups support it directly).
-In spite of the different PyPI names here, the packages actually installed will be named ``ansible`` and ``elasticluster``, which is why using
-a virtualenv is a good idea. The ``--pre`` flag is needed because these are both labeled as "dev" versions in PyPI.
+This is the forked version of elasticluster that supports Azure (for testing prior to integration with elsticluster).
+(NOTE: A previous version of this code required a special version of Ansible. This is no longer the case.)
+In spite of the different PyPI name here, the package actually installed will be named ``elasticluster``, so if you also need to run
+the standard version of elasticluster on the same computer, you should use a virtual environment for this one. 
+The ``--pre`` flag is needed because this is labeled as a "dev" version in PyPI.
 
 ::
 
-	pip install --pre azure-ansible
 	pip install --pre azure-elasticluster
 
 4. Confirm elasticluster is ready to run:
@@ -62,20 +76,24 @@ a virtualenv is a good idea. The ``--pre`` flag is needed because these are both
 
 	elasticluster --help
 
-5. You'll need to have an Azure account and know its subscription ID. (see http://azure.microsoft.com/en-us/ to set up a 30-day trial account if necessary.) You'll also need to generate a management certificate (.cer) and upload it to Azure. If you haven't done this yet:
+5. You'll need to have an Azure account and know its subscription ID. (see http://azure.microsoft.com/en-us/ to set up a 30-day trial account if necessary.) 
+You'll also need to generate a management certificate (.cer) and upload it to Azure. If you haven't done this yet:
 
 ::
 
 	mkdir ~/.ssh
 	chmod 700 ~/.ssh
 
-Here's one of those things that shouldn't matter, but it apparently does: you should run the following openssl commands from the ``~/.ssh`` directory. (Or maybe it's OK if you always use absolute paths instead of "~", but that's unconfirmed at this point.) If you don't do this, the resulting keys will not work - Azure will accept them, but Ansible won't, so your VMs will start and then fail to be provisioned.
+Here's one of those things that shouldn't matter, but it apparently does: you should run the following openssl commands from the ``~/.ssh`` 
+directory. (Or maybe it's OK if you always use absolute paths instead of "~", but that's unconfirmed at this point.) If you don't do this, 
+the resulting keys will not work - Azure will accept them, but Ansible won't, so your VMs will start and then fail to be provisioned.
 
 ::
 
 	cd ~/.ssh
 
-The next command will prompt for information. Set the company name as it will make finding the cert in azure portal easier. Everything else can be blank. 
+The next command will prompt for information. Set the company name as it will make finding the cert in azure portal easier. Everything else 
+can be blank. 
 
 ::
 
@@ -96,32 +114,39 @@ SSH is picky about ownership/permissions on key files. Make sure that yours look
 
 	$ ls -l ~/.ssh
 	[...]
-	-rw------- 1 dave dave  797 May  3 18:00 managementCert.cer
+	-rw------- 1 my_user_name my_user_name  797 May  3 18:00 managementCert.cer
 
 Use these commands if needed on the .pem, .cer, and .key files:
 
 ::
 
-	# replace 'dave' with your username - you knew that
-	sudo chown dave:dave ~/.ssh/managementCert.pem
+	# replace 'my_user_name' with your username - you knew that
+	sudo chown my_user_name:my_user_name ~/.ssh/managementCert.pem
 	sudo chmod 600 ~/.ssh/managementCert.pem
 
-7. Upload managementCert.cer to your Azure subscription via the web portal. (Scroll down to "settings" on the left-hand menu, then click "management certificates" at the top, and you'll find an "upload" button at the bottom.)
+7. Upload managementCert.cer to your Azure subscription via the web portal. (Scroll down to "settings" on the left-hand menu, then click 
+"management certificates" at the top, and you'll find an "upload" button at the bottom.)
 
 
 
-8. Edit the elasticluster config file. (The default is ``~/.elasticluster/config``. You can optionally specify a different file/path on the elasticluster command line.) You'll need to edit the items marked ``**** CHANGE ****``.
+8. Edit the elasticluster config file. (The default is ``~/.elasticluster/config``. You can optionally specify a different file/path on the 
+elasticluster command line.) You can start by copying the file ``azure-sample-config`` from the same directory as this README to 
+``~/.elasticluster/config`` on your computer. You'll need to edit the items marked ``**** CHANGE ****``.
 
-For the certificate, specify the .pem file created in step 5 (e.g. ``/home/dave/.ssh/managementCert.pem``).
+For the certificate, specify the .pem file created in step 5 (e.g. ``/home/my_user_name/.ssh/managementCert.pem``).
 
-For user_key_private, specify the .key file created in step 7 (e.g. ``/home/dave/.ssh/managementCert.key``). For user_key_public, specify the same .pem file you used for the certificate entry.
+For user_key_private, specify the .key file created in step 7 (e.g. ``/home/my_user_name/.ssh/managementCert.key``). For user_key_public, specify 
+the same .pem file you used for the certificate entry.
 
-(Warning - do not use ``~`` (tilde) in the paths for these values - specify the whole path explicitly. This is another case where ``~`` will not be interpreted correctly.)
+(Warning - do not use ``~`` (tilde) in the paths for these values - specify the whole path explicitly. This is another case where ``~`` will 
+not be interpreted correctly.)
 
-Set the basename to a meaningful string of between 3 and 15 characters, digits and lowercase letters only. All Azure resources created will include this string.
+Set the basename to a meaningful string of between 3 and 15 characters, digits and lowercase letters only. All Azure resources created will 
+include this string.
 
 
-There are some other config settings available that are not needed for this example. Clusters with more than 10 or so compute nodes have not been tested yet.
+There are some other config settings available that are not needed for this example. Clusters with more than 10 or so compute nodes have 
+not been tested yet.
 
 9. Start the cluster (``-vvv`` will produce verbose diagnostic output - you can use zero to four v's):
 
@@ -129,9 +154,13 @@ There are some other config settings available that are not needed for this exam
 
 	elasticluster -vvv start azure-gridengine
 
-If all goes well, first you'll see global resources created and then the nodes being brought up. Then elasticluster will try to ssh to each node - this typically fails for awhile, as the nodes finish booting up, and then it succeeds. When all the nodes have been contacted, the Ansible provisioning step will start. This installs the normal gridengine setup that comes with elasticluster - nothing's been modified for Azure. Finally, elasticluster will print a "your cluster is ready!" message.
+If all goes well, first you'll see global resources created and then the nodes being brought up. Then elasticluster will try to ssh to 
+each node - this typically fails for awhile, as the nodes finish booting up, and then it succeeds. When all the nodes have been contacted, the Ansible provisioning step will start. This installs the normal gridengine setup that comes with elasticluster - nothing's been modified for Azure. Finally, elasticluster will print a "your cluster is ready!" message.
 
-On occasion, something will go wrong during the Ansible provisioning phase, which follows the creation of the cluster itself (i.e. the virtual machines, storage accounts, cloud services, and virtual network). In these cases, at the end of the output there will usually be a "Your cluster is not ready!" message. If the last saved state of the cluster includes the correct addresses (ip:port) for the vms, there's no need to destroy and restart from scratch. Instead, you can re-run the Ansible phase with this command:
+On occasion, something will go wrong during the Ansible provisioning phase, which follows the creation of the cluster itself (i.e. the 
+virtual machines, storage accounts, cloud services, and virtual network). In these cases, at the end of the output there will usually be 
+a "Your cluster is not ready!" message. If the last saved state of the cluster includes the correct addresses (ip:port) for the vms, 
+there's no need to destroy and restart from scratch. Instead, you can re-run the Ansible phase with this command:
 
 ::
 
@@ -152,9 +181,41 @@ On occasion, something will go wrong during the Ansible provisioning phase, whic
 
 	elasticluster -vvv stop azure-gridengine
 
-A final note on caching - elasticluster tries to preserve information about running clusters, so it frequently saves cluster state to disk. This is good, except when reality doesn't match the saved state. For example, a startup might have failed partway through, and you might have used the Azure management console to clean things up. To reset elasticluster's saved state, do something like this:
+13. Troubleshooting:
 
+Occasionally, Azure will start a VM, but it will stay in an unreachable state. In the Azure console, such a VM will show a status 
+of "provisioning failed". It will never respond to connection attempts. Elasticluster tries and fails to contact the VM until the 
+configured time [WHAT!!!] has elapsed. Then it will try to delete the VM (which usually works) and will continue on with whatever VMs 
+remain. (But if the failed node was the only frontend node, the cluster won't be much use, and you'll probably want to stop it.)
+
+If a cluster is in an unusable state, perhaps because of errors on startup or shutdown, and can't be stopped cleanly with the 
+elasticluster ``stop`` command, you might need to clean up Azure resources as well as local files to prevent errors on the next start 
+(and to prevent unwanted Azure charges). Here are the steps:
+
+1. Find your elasticluster storage directory. By default, this is ``~/.elasticluster/storage``. You might have set it to something else, either 
+by using the ``-s {path}`` option on the elasticluster command line, or by setting
 ::
 
-	rm ~/.elasticluster/storage/*gridengine*
+	[storage]
+	storage_path = {path}
+	
+in your config file (if you are using the latest version of elasticluster).
+
+2. From the storage directory, delete all files whose names contain your cluster name, or the base_name specified in your config. For example:
+::
+
+	rm ~/.elasticluster/storage/*azure-gridengine*
+	rm ~/.elasticluster/storage/*test1234*
+	
+3. Log into the Azure management console (https://manage.windowsazure.com) and look for resources left over from your cluster. Proceed in 
+this order:
+
+	a. Cloud services. When you delete a cloud service, choose the "delete the cloud service and its deployments" option so that the virtual
+	machines in the cloud service get deleted too.
+
+	b. Storage accounts. You might need to wait awhile after deleting a virtual machine before you can successfully delete the storage account that
+	was used to host the OS hard drive for that VM. To speed this up, go to "Virtual Machines", then "Disks", and try to delete any disks shown.
+	Once these are gone, you should be able to delete the storage account.
+
+	c. Networks. Again, it may take a few minutes after deleting other resources before you can delete a network.
 
