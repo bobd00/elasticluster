@@ -6,12 +6,16 @@
 from __future__ import absolute_import
 
 # System imports
+import os
+import pickle
 from math import floor, ceil
 import base64
 import subprocess
 import time
 import re
 import threading
+import traceback
+import random
 import xml.etree.ElementTree as xmltree
 
 # External imports
@@ -31,8 +35,11 @@ WAIT_RESULT_SLEEP = 10
 VNET_NS = 'http://schemas.microsoft.com/ServiceHosting' \
           '/2011/07/NetworkConfiguration'
 # general-purpose retry parameters
-RETRIES = 10
+RETRIES = 50
 RETRY_SLEEP = 20
+RETRY_SLEEP_RND = 10
+VHD_DELETE_ATTEMPTS = 100
+VHD_DELETE_INTERVAL = 10
 
 # resource-management constants
 VMS_PER_CLOUD_SERVICE = 20
@@ -41,6 +48,10 @@ VMS_PER_VNET = 2000
 CLOUD_SERVICES_PER_SUBSCRIPTION = 20
 
 # helper functions
+
+
+def _retry_sleep():
+    return RETRY_SLEEP + random.randint(0, RETRY_SLEEP_RND)
 
 
 def _run_command(args):
@@ -130,6 +141,11 @@ def check_response(response):
         raise Exception("response status %s" % response.status)
 
 
+# def stats(help_string):
+#     log.debug("--->%s: %s %.3f", help_string,
+#              threading.current_thread().name, time.time())
+
+
 class AzureGlobalConfig(object):
 
     """Manage all the settings for an Azure cluster which are
@@ -141,7 +157,6 @@ class AzureGlobalConfig(object):
 
     # we only get a few pieces of information at this point
     def __init__(self, parent, subscription_id, certificate, storage_path):
-        self._setup_done = False
 
         self._parent = parent
         # if we got a subscription here, use it. if not,
@@ -176,7 +191,9 @@ class AzureGlobalConfig(object):
         self._vm_per_sa = None
 
     # called when the first node is about to be created. this is where
-    # we get most of the config info
+    # we get most of the config info. this is not threadsafe - caller
+    # must ensure it isn't called concurrently and that it is only
+    # called once.
     def setup(
             self,
             key_name,
@@ -194,7 +211,6 @@ class AzureGlobalConfig(object):
             n_cloud_services=None,
             n_storage_accounts=None,
             **kwargs):
-        self._setup_done = True
         self._key_name = key_name
         self._public_key_path = public_key_path
         self._private_key_path = private_key_path
@@ -224,6 +240,8 @@ class AzureGlobalConfig(object):
             log.error(err)
             raise Exception(err)
 
+        # compute total VMs requested (warn: depends on frontend_nodes and
+        # compute_nodes being defined)
         n_frontend_nodes = n_compute_nodes = 0
         if frontend_nodes:
             n_frontend_nodes = _check_positive_integer('frontend_nodes',
@@ -249,6 +267,15 @@ class AzureGlobalConfig(object):
                                                 VMS_PER_STORAGE_ACCOUNT)
 
         self._n_subscriptions = len(self._parent._subscriptions)
+        if self._n_subscriptions > self._n_cloud_services or \
+                self._n_subscriptions > self._n_storage_accounts:
+            new_subs = min(self._n_cloud_services, self._n_storage_accounts)
+            msg = "Can't use all %i subscriptions available. Will only " \
+                  "use %i." % (self._n_subscriptions, new_subs)
+            log.warn(msg)
+            self._parent._subscriptions[new_subs:self._n_subscriptions] = []
+            self._n_subscriptions = new_subs
+
         min_subscriptions = ceil_div(self._n_cloud_services,
                                      CLOUD_SERVICES_PER_SUBSCRIPTION)
         if self._n_subscriptions < min_subscriptions:
@@ -289,7 +316,9 @@ class AzureGlobalConfig(object):
 
     def _vm_name_to_flat(self, vm_name):
         if vm_name and vm_name.startswith(self._base_name + '_vm'):
-            bare = vm_name[len(self._base_name) + 3:]
+            start = len(self._base_name) + 3
+            end = start + 4
+            bare = vm_name[start:end]
             return int(bare)
         err = "_vm_name_to_flat: can't process vm_name %s" % vm_name
         log.error(err)
@@ -366,31 +395,42 @@ class AzureSubscription(object):
         self._fingerprint = fingerprint
         self._pkcs12_base64 = signature
 
+        # initialize properties
+        _ = self._resource_lock  # force instantiation
+        if self._sms_internal is None:
+            try:
+                self._sms_internal = \
+                    azure.servicemanagement.ServiceManagementService(
+                        self._subscription_id, self._certificate)
+            except Exception as exc:
+                log.error('error initializing azure serice: %s', exc)
+                raise
+
     @property
     def _resource_lock(self):
         if self._resource_lock_internal is None:
-            self._resource_lock_internal = threading.Lock()
+            self._resource_lock_internal = threading.RLock()
         return self._resource_lock_internal
 
     @property
     def _sms(self):
-        with self._resource_lock:
-            if self._sms_internal is None:
-                try:
-                    self._sms_internal = \
-                        azure.servicemanagement.ServiceManagementService(
-                            self._subscription_id, self._certificate)
-                except Exception as exc:
-                    log.error('error initializing azure serice: %s', exc)
-                    raise
-            return self._sms_internal
+        if self._sms_internal is None:
+            try:
+                self._sms_internal = \
+                    azure.servicemanagement.ServiceManagementService(
+                        self._subscription_id, self._certificate)
+            except Exception as exc:
+                log.error('error initializing azure serice: %s', exc)
+                raise
+        return self._sms_internal
 
     @property
     def _n_instances(self):
         ret = 0
-        for cloud_service in self._cloud_services:
-            ret = ret + cloud_service._n_instances
-        return ret
+        with self._resource_lock:
+            for cloud_service in self._cloud_services:
+                ret = ret + cloud_service._n_instances
+            return ret
 
     # this needs to be in here because sms is per-subscription
     def _wait_result(self, req, timeout=None):
@@ -451,18 +491,19 @@ class AzureCloudService(object):
         self._subscription = subscription
         self._location = config._location
         self._index = index
-        self._name = "%s0su%ics%i" % (
+        self._name = "%ssu%ics%i" % (
             self._config._base_name, self._subscription._index, self._index)
         # treat deployment as sub-item of cloud service
         # deployment has same name as cloud service
         # only instances owned by this cloud service:
         self._instances = {}
         self._resource_lock_internal = None
+        self._deployment_created = False
 
     @property
     def _resource_lock(self):
         if self._resource_lock_internal is None:
-            self._resource_lock_internal = threading.Lock()
+            self._resource_lock_internal = threading.RLock()
         return self._resource_lock_internal
 
     @property
@@ -485,36 +526,38 @@ class AzureCloudService(object):
         return False
 
     def _create(self):
-        if not self._exists:
-            try:
-                result = self._subscription._sms.create_hosted_service(
-                    service_name=self._name,
-                    label=self._name,
-                    location=self._location)
-                self._subscription._wait_result(result)
-            except Exception as exc:
-                # this shouldn't happen
-                # if str(e) == 'Conflict (Conflict)':
-                #    return False
-                log.error('error creating cloud service %s: %s',
-                          self._name, exc)
-                raise
+        with self._resource_lock:
+            if not self._exists:
+                try:
+                    result = self._subscription._sms.create_hosted_service(
+                        service_name=self._name,
+                        label=self._name,
+                        location=self._location)
+                    self._subscription._wait_result(result)
+                except Exception as exc:
+                    # this shouldn't happen
+                    # if str(e) == 'Conflict (Conflict)':
+                    #    return False
+                    log.error('error creating cloud service %s: %s',
+                              self._name, exc)
+                    raise
 
     def _delete(self):
-        if self._deployment:
-            log.error("can't delete cloud service %s. It contains a "
-                      "deployment and at least one node.", self._name)
-            return False
-        try:
-            self._subscription._sms.delete_hosted_service(
-                service_name=self._name)
-        except Exception as exc:
-            log.error('error deleting cloud service %s: %s', self._name, exc)
-            raise
-        return True
+        with self._resource_lock:
+            if self._deployment:
+                log.error("can't delete cloud service %s. It contains a "
+                          "deployment and at least one node.", self._name)
+                return False
+            try:
+                self._subscription._sms.delete_hosted_service(
+                    service_name=self._name)
+            except Exception as exc:
+                log.error('error deleting cloud service %s: %s',
+                          self._name, exc)
+                raise
+            return True
 
-    # don't call directly. called by an AzureVM when it's being deleted
-    # and is the last node in the deployment.
+    # called by _stop_vm when vm is the last node in the deployment.
     def _delete_deployment(self):
         try:
             result = self._subscription._sms.delete_deployment(
@@ -526,6 +569,7 @@ class AzureCloudService(object):
                       self._name, exc)
             raise
 
+    # not currently in use
     @property
     def _deployment(self):
         try:
@@ -543,6 +587,142 @@ class AzureCloudService(object):
         result = self._subscription._sms.add_service_certificate(
             self._name, self._subscription._pkcs12_base64, 'pfx', '')
         self._subscription._wait_result(result)
+
+    def _start_vm(self, v_m):
+        with self._resource_lock:
+            if not self._deployment_created:
+                # block while we create the deployment and start the vm
+                attempt = 1
+                sub = self._subscription
+                sms = sub._sms
+                while attempt < RETRIES:
+                    try:
+                        result = sms.create_virtual_machine_deployment(
+                            service_name=self._name,
+                            deployment_name=self._name,
+                            deployment_slot='production',
+                            label=v_m._node_name,
+                            role_name=v_m._qualified_name,
+                            system_config=v_m._system_config,
+                            network_config=v_m._network_config,
+                            os_virtual_hard_disk=v_m._os_virtual_hard_disk,
+                            role_size=v_m._flavor,
+                            role_type='PersistentVMRole',
+                            virtual_network_name=v_m._virtual_network_name)
+                        sub._wait_result(result)
+                        break
+                    except Exception as exc:
+                        if str(exc) == 'Conflict (Conflict)':
+                            log.error('error creating vm %s (attempt %i of '
+                                      '%i): virtual machine already exists.',
+                                      v_m._qualified_name, attempt, RETRIES)
+                            raise   # this is serialized, so probably a
+                            # legit error
+                        else:
+                            log.error('error creating vm %s (attempt '
+                                      '%i of %i): %s', v_m._qualified_name,
+                                      attempt, RETRIES, exc)
+                    time.sleep(_retry_sleep())
+                    attempt += 1
+                if attempt >= RETRIES:
+                    err = 'AzureVM start %s: giving up after %i attempts' % \
+                          (v_m._qualified_name, RETRIES)
+                    log.error(err)
+                    raise Exception(err)
+
+                # need to find the disk name for the OS disk attached to
+                # this vm.
+                self._subscription._find_os_disks()
+                v_m._created = True
+                self._deployment_created = True
+                return
+
+        # add the vm to the deployment - can be parallel (?)
+        attempt = 1
+        sub = self._subscription
+        sms = sub._sms
+        while attempt < RETRIES:
+            try:
+                log.debug("attempt %i to start vm node name %s qual name %s",
+                          attempt, v_m._node_name, v_m._qualified_name)
+                result = sms.add_role(
+                    service_name=self._name,
+                    deployment_name=self._name,
+                    role_name=v_m._qualified_name,
+                    system_config=v_m._system_config,
+                    network_config=v_m._network_config,
+                    os_virtual_hard_disk=v_m._os_virtual_hard_disk,
+                    role_size=v_m._flavor,
+                    role_type='PersistentVMRole')
+                sub._wait_result(result)
+                break
+            except azure.WindowsAzureConflictError as exc:
+                log.error('WindowsAzureConflictError creating vm %s (attempt '
+                          '%i of %i): %s', v_m._qualified_name,
+                          attempt, RETRIES, exc)
+            except Exception as exc:
+                log.error('error creating vm %s (attempt '
+                          '%i of %i): %s', v_m._qualified_name,
+                          attempt, RETRIES, exc)
+            time.sleep(_retry_sleep())
+            attempt += 1
+        if attempt >= RETRIES:
+            err = 'AzureVM start %s: giving up after %i attempts' % \
+                  (v_m._qualified_name, RETRIES)
+            log.error(err)
+            raise Exception(err)
+        # need to find the disk name for the OS disk attached to
+        # this vm.
+        self._subscription._find_os_disks()
+        v_m._created = True
+
+    def _stop_vm(self, v_m):
+        attempt = 1
+        sub = self._subscription
+        sms = sub._sms
+        while attempt < RETRIES:
+            try:
+                log.debug("attempt %i to stop vm node name %s qual name %s",
+                          attempt, v_m._node_name, v_m._qualified_name)
+                if len(self._instances) == 1:
+                    # we are the last node in this cloud service,
+                    # so delete deployment
+                    self._delete_deployment()
+                else:
+                    result = sms.delete_role(
+                        service_name=self._name,
+                        deployment_name=self._name,
+                        role_name=v_m._qualified_name)
+                    sub._wait_result(result)
+
+                with self._resource_lock:
+                    prov = self._config._parent
+                    prov._disks_to_delete[v_m._os_vhd_name] = {
+                        'SMS': v_m._subscription._sms,
+                        'TRIES': 0, 'LATEST_TRY': None}
+                    del self._instances[v_m._qualified_name]
+                break
+            except Exception as exc:
+                log.error('error stopping vm %s (attempt '
+                          '%i of %i): %s', v_m._qualified_name,
+                          attempt, RETRIES, exc)
+                if str(exc) == 'Not found (Not Found)':
+                    # assume the error is right, and try to clean up the
+                    # leftovers of the vm state
+                    with self._resource_lock:
+                        prov = self._config._parent
+                        prov._disks_to_delete[v_m._os_vhd_name] = {
+                            'SMS': v_m._subscription._sms,
+                            'TRIES': 0, 'LATEST_TRY': None}
+                        del self._instances[v_m._qualified_name]
+                    break
+            time.sleep(_retry_sleep())
+            attempt += 1
+        if attempt >= RETRIES:
+            err = '_stop_vm %s: giving up after %i attempts' % \
+                  (v_m._qualified_name, RETRIES)
+            log.error(err)
+            raise Exception(err)
 
     def __getstate__(self):
         dct = self.__dict__.copy()
@@ -562,7 +742,7 @@ class AzureStorageAccount(object):
         self._config = config
         self._subscription = subscription
         self._index = index
-        self._name = "%s0su%ist%i" % (
+        self._name = "%ssu%ist%i" % (
             self._config._base_name, self._subscription._index, self._index)
         self._resource_lock_internal = None
 
@@ -613,42 +793,28 @@ class AzureStorageAccount(object):
                 raise
 
     def _delete(self):
-        try:
-            self._subscription._sms.delete_storage_account(
-                service_name=self._name)
-        except Exception as exc:
-            log.error('error deleting storage account %s: %s', self._name, exc)
-            raise
+        attempts = 10
+        for attempt in range(1, attempts):
+            try:
+                self._subscription._sms.delete_storage_account(
+                    service_name=self._name)
+                log.debug('delete storage account %s: success on attempt %i',
+                          self._name, attempt)
+                return
+            except Exception as exc:
+                log.error('delete storage account %s: error on attempt '
+                          '#%i: %s', self._name, attempt, exc)
+                time.sleep(10)
+        err = 'delete storage account %s: giving up after %i attempts' % \
+              (self._name, attempts)
+        log.error(err)
+        raise Exception(err)
 
     def _create_vhd(self, node_name, image_id):
         disk_url = u'http://%s.blob.core.windows.net/vhds/%s.vhd' % (
             self._name, node_name)
         vhd = azure.servicemanagement.OSVirtualHardDisk(image_id, disk_url)
         return vhd, disk_url
-
-    def _delete_vhd(self, name):
-        attempts = 100
-        for attempt in range(1, attempts):
-            try:
-                # delete_vhd=False doesn't seem to help if the disk is not
-                # ready to be deleted yet
-                self._subscription._sms.delete_disk(
-                    disk_name=name, delete_vhd=True)
-                log.debug('_delete_vhd %s: success on attempt %i',
-                          name, attempt)
-                return
-            except Exception as exc:
-                if str(exc) == 'Not found (Not Found)':
-                    log.debug(
-                        "_delete_vhd: 'not found' deleting %s, assuming "
-                        "success", name)
-                    return
-                # log.error('_delete_vhd: error on attempt #%i to delete disk
-                # %s: %s' % (attempt, name, e))
-                time.sleep(10)
-        err = '_delete_vhd %s: giving up after %i attempts' % (name, attempts)
-        log.error(err)
-        raise Exception(err)
 
     def __getstate__(self):
         dct = self.__dict__.copy()
@@ -667,7 +833,7 @@ class AzureVNet(object):
         self._config = config
         self._subscription = subscription
         self._index = index
-        self._name = "%s0su%ivn%i" % (
+        self._name = "%ssu%ivn%i" % (
             self._config._base_name, self._subscription._index, self._index)
         self._resource_lock_internal = None
         # location comes from config
@@ -702,7 +868,7 @@ class AzureVNet(object):
     def _get_xml(self):
         # get the xml defining the current vnet config for the whole
         # subscription.
-        attempt = 0
+        attempt = 1
         while attempt < RETRIES:
             try:
                 response = self._subscription._sms.perform_get(self._path)
@@ -714,7 +880,7 @@ class AzureVNet(object):
                 log.error('error in _get_xml for vnet %s '
                           '(attempt %i of %i): %s',
                           self._name, attempt, RETRIES, exc)
-            time.sleep(RETRY_SLEEP)
+            time.sleep(_retry_sleep())
             attempt += 1
         err = "AzureVNet %s _get_xml: giving up after %i attempts" % \
               (self._name, RETRIES)
@@ -769,7 +935,7 @@ class AzureVNet(object):
             log.error(err)
             raise
         # replace the whole network config,
-        attempt = 0
+        attempt = 1
         while attempt < RETRIES:
             try:
                 response = _rest_put(self._subscription, self._path, xml)
@@ -791,7 +957,7 @@ class AzureVNet(object):
                 log.error('error in _create for vnet %s '
                           '(attempt %i of %i): %s',
                           self._name, attempt, RETRIES, exc)
-            time.sleep(RETRY_SLEEP)
+            time.sleep(_retry_sleep())
             attempt += 1
         err = "AzureVNet %s _delete: giving up after %i attempts" % \
               (self._name, RETRIES)
@@ -830,7 +996,7 @@ class AzureVNet(object):
             log.error(err)
             raise
         # replace the whole network config,
-        attempt = 0
+        attempt = 1
         while attempt < RETRIES:
             try:
                 response = _rest_put(self._subscription, self._path, xml)
@@ -847,7 +1013,7 @@ class AzureVNet(object):
                 log.error('error in _delete for vnet %s '
                           '(attempt %i of %i): %s',
                           self._name, attempt, RETRIES, exc)
-            time.sleep(RETRY_SLEEP)
+            time.sleep(_retry_sleep())
             attempt += 1
         err = "AzureVNet %s _delete: giving up after %i attempts" % \
               (self._name, RETRIES)
@@ -900,6 +1066,21 @@ class AzureVNet(object):
         subprefix.text = '10.0.0.0/11'
         return subtree
 
+    # return info on all vnets currently defined in a subscription
+    @staticmethod
+    def _get_list(subscription, strng):
+        try:
+            ret = list()
+            result = subscription._sms.list_virtual_network_sites()
+            if len(result):
+                for virtual_network_site in result.virtual_network_sites:
+                    ret.append(virtual_network_site.name)
+            return ret
+        except Exception as exc:
+            log.error('error getting list of vnets for subscription %s: %s',
+                      subscription._name, exc)
+            raise
+
     def __getstate__(self):
         dct = self.__dict__.copy()
         del dct['_resource_lock_internal']
@@ -947,8 +1128,8 @@ class AzureVM(object):
             self._storage_account = \
                 self._subscription._storage_accounts[i_storage_account]
 
-        self._qualified_name = '{0}_vm{1:04d}'.format(
-            self._config._base_name, self._node_index)
+        self._qualified_name = '{0}_vm{1:04d}_{2}'.format(
+            self._config._base_name, self._node_index, self._node_name)
         self._public_ip_internal = None
         self._ssh_port = None
         self._os_virtual_hard_disk = None
@@ -957,93 +1138,19 @@ class AzureVM(object):
         self._paused = False
         self._system_config = None
         self._network_config = None
+        self._virtual_network_name = None
 
-    def _delete(self):
-        # this should have a retry loop
-        try:
-            if len(self._cloud_service._instances) == 1:
-                # we are the last node in this cloud service,
-                # so delete deployment
-                self._cloud_service._delete_deployment()
-            else:
-                result = self._cloud_service._subscription._sms.delete_role(
-                    service_name=self._cloud_service._name,
-                    deployment_name=self._cloud_service._name,
-                    role_name=self._qualified_name)
-                self._subscription._wait_result(result)
-            self._storage_account._delete_vhd(self._os_vhd_name)
-            with self._cloud_service._resource_lock:
-                del self._cloud_service._instances[self._qualified_name]
-        except Exception as exc:
-            log.error('error deleting vm %s: %s', self._qualified_name, exc)
-            raise
-
-    def _start(self):
         try:
             self._create_network_config()
 
             (self._os_virtual_hard_disk, _) = \
                 self._storage_account._create_vhd(self._node_name, self._image)
-            virtual_network_name = \
-                self._config._parent._subscriptions[0]._vnet._name
+            self._virtual_network_name = \
+                self._subscription._vnet._name
         except Exception as exc:
             log.error('error creating reqs for vm %s: %s',
                       self._qualified_name, exc)
             raise
-
-        sms = self._cloud_service._subscription._sms
-        attempt = 0
-        while attempt < RETRIES:
-            try:
-                if self._cloud_service._instances:
-                    # add a node to existing deployement
-                    result = sms.add_role(
-                        service_name=self._cloud_service._name,
-                        deployment_name=self._cloud_service._name,
-                        role_name=self._qualified_name,
-                        system_config=self._system_config,
-                        network_config=self._network_config,
-                        os_virtual_hard_disk=self._os_virtual_hard_disk,
-                        role_size=self._flavor,
-                        role_type='PersistentVMRole')
-                else:
-                    # create the deployment and first node
-                    result = sms.create_virtual_machine_deployment(
-                        service_name=self._cloud_service._name,
-                        deployment_name=self._cloud_service._name,
-                        deployment_slot='production',
-                        label=self._node_name,
-                        role_name=self._qualified_name,
-                        system_config=self._system_config,
-                        network_config=self._network_config,
-                        os_virtual_hard_disk=self._os_virtual_hard_disk,
-                        role_size=self._flavor,
-                        role_type='PersistentVMRole',
-                        virtual_network_name=virtual_network_name)
-                self._subscription._wait_result(result)
-                self._created = True
-                with self._cloud_service._resource_lock:
-                    self._cloud_service._instances[self._qualified_name] = self
-
-                # need to find the disk name for the OS disk attached to
-                # this vm. this involves redundant work that should be
-                # dealt with if it's a problem.
-                self._subscription._find_os_disks()
-                return
-            except Exception as exc:
-                if str(exc) == 'Conflict (Conflict)':
-                    log.debug('virtual machine %s already exists.',
-                              self._qualified_name)
-                    raise   # no point in retrying
-                else:
-                    log.error('error creating vm %s (attempt %i of %i): %s',
-                              self._qualified_name, attempt, RETRIES, exc)
-            time.sleep(RETRY_SLEEP)
-            attempt += 1
-        err = 'AzureVM start %s: giving up after %i attempts' % \
-              (self._qualified_name, RETRIES)
-        log.error(err)
-        raise Exception(err)
 
     def pause(self, instance_id, keep_provisioned=True):
         """shuts down the instance without destroying it.
@@ -1196,21 +1303,21 @@ class AzureCloudProvider(AbstractCloudProvider):
         `setup` section in the configuration file.
         """
         # Paramiko debug level
-        import logging
-        logging.getLogger('paramiko').setLevel(logging.DEBUG)
-        logging.basicConfig(level=logging.DEBUG)
-
-        # for winpdb debugging
-        # import rpdb2
-        # rpdb2.start_embedded_debugger('food')
+        # import logging
+        # logging.getLogger('paramiko').setLevel(logging.DEBUG)
+        # logging.basicConfig(level=logging.DEBUG)
 
         # Ansible debug level
-        import ansible
-        import ansible.utils
-        ansible.utils.VERBOSITY = 2
+        # import ansible
+        # import ansible.utils
+        # ansible.utils.VERBOSITY = 9
+
+        # auto stack tracing
+        # import stacktracer
+        # stacktracer.trace_start("trace.html",interval=15,auto=True)
 
         # flag indicating resource creation failed - don't even
-        # attempt node operations
+        # attempt node operations after this is set
         self._start_failed = None
 
         # this lock should never be held for long - only for changes to the
@@ -1218,8 +1325,14 @@ class AzureCloudProvider(AbstractCloudProvider):
         self._resource_lock_internal = None
 
         # resources
+        self._cluster_prep_done = False
         self._subscriptions = []
-        self._storage_accounts = []
+
+        # diagnostics
+        self._times = {}
+
+        # cleanup
+        self._disks_to_delete = {}
 
         self._config = AzureGlobalConfig(
             self, subscription_id, certificate, storage_path)
@@ -1255,13 +1368,14 @@ class AzureCloudProvider(AbstractCloudProvider):
             raise Exception('start_instance for node %s: failing due to'
                             ' previous errors.' % node_name)
 
-        # locking is rudimentary at this point
+        index = None
         with self._resource_lock:
             # it'd be nice if elasticluster called something like
             # init_cluster() with all the args that will be the
             # same for every node created. But since it doesn't, handle that on
             # first start_instance call.
-            if not self._config._setup_done:
+            if not self._cluster_prep_done:
+                self._times['CLUSTER_START'] = time.time()
                 self._config.setup(
                     key_name,
                     public_key_path,
@@ -1276,16 +1390,20 @@ class AzureCloudProvider(AbstractCloudProvider):
                     n_cloud_services=n_cloud_services,
                     n_storage_accounts=n_storage_accounts,
                     **kwargs)
-
-            # absolute node index in cluster (0..n-1) determines what
-            # subscription, cloud service, storage
-            # account, etc. this VM will use. Cloud provider only tracks
-            # how many instances have been created.
-            index = self._n_instances
-            if index == 0:
+                # we know we're starting the first node, so create global
+                # requirements now
                 self._create_global_reqs()
                 if self._start_failed:
                     return None
+                # this will allow vms to be created
+                self._times['SETUP_DONE'] = time.time()
+                self._cluster_prep_done = True
+
+            # absolute node index in cluster (0..n-1) determines what
+            # subscription, cloud service, storage
+            # account, etc. this VM will use. Create the vm and add it to
+            # its cloud service, then try to start it.
+            index = self._n_instances
 
             v_m = AzureVM(
                 self._config,
@@ -1295,14 +1413,38 @@ class AzureCloudProvider(AbstractCloudProvider):
                 node_name=node_name,
                 host_name=host_name,
                 image_userdata=image_userdata)
+            v_m._cloud_service._instances[v_m._qualified_name] = v_m
 
-            try:
-                v_m._start()
-            except Exception:
-                self._start_failed = True
-                return None
-            log.debug('started instance %s', v_m._qualified_name)
-            return v_m._qualified_name
+        try:
+            v_m._cloud_service._start_vm(v_m)
+        except Exception:
+            log.error(traceback.format_exc())
+            log.error("setting start_failed flag. Will not "
+                      "try to start further nodes.")
+            self._start_failed = True
+            return None
+        log.debug('started instance %s', v_m._qualified_name)
+        if index == self._config._n_vms_requested - 1:
+            self._times['NODES_STARTED'] = time.time()
+            self._times['SETUP_ELAPSED'] = self._times['SETUP_DONE'] - \
+                self._times['CLUSTER_START']
+            self._times['NODE_START_ELAPSED'] = self._times['NODES_STARTED']\
+                - self._times['SETUP_DONE']
+            self._times['CLUSTER_START_ELAPSED'] = \
+                self._times['SETUP_ELAPSED'] + \
+                self._times['NODE_START_ELAPSED']
+
+            log.debug("setup time: %.1f sec", self._times['SETUP_ELAPSED'])
+            log.debug("node start time: %.1f sec (%.1f sec per vm)",
+                      self._times['NODE_START_ELAPSED'],
+                      self._times['NODE_START_ELAPSED'] /
+                      self._config._n_vms_requested)
+            log.debug("total cluster start time: %.1f sec (%.1f sec per vm)",
+                      self._times['CLUSTER_START_ELAPSED'],
+                      self._times['CLUSTER_START_ELAPSED'] /
+                      self._config._n_vms_requested)
+        self._save_or_update()  # store our state
+        return v_m._qualified_name
 
     def stop_instance(self, instance_id):
         """Stops the instance gracefully.
@@ -1311,6 +1453,7 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: None
         """
+        self._restore_from_storage(instance_id)
         if self._start_failed:
             raise Exception('stop_instance for node %s: failing due to'
                             ' previous errors.' % instance_id)
@@ -1322,15 +1465,17 @@ class AzureCloudProvider(AbstractCloudProvider):
                     err = "stop_instance: can't find instance %s" % instance_id
                     log.error(err)
                     raise Exception(err)
-                v_m._delete()
+                v_m._cloud_service._stop_vm(v_m)
                 # note: self._n_instances is a derived property, doesn't need
                 # to be updated
                 if self._n_instances == 0:
                     log.debug('last instance deleted, destroying '
                               'global resources')
                     self._delete_global_reqs()
+                    self._delete_cloud_provider_storage()
             except Exception as exc:
-                log.error('error stopping instance %s: %s', instance_id, exc)
+                log.error(traceback.format_exc())
+                log.error("error stopping instance %s: %s", instance_id, exc)
                 raise
         log.debug('stopped instance %s', instance_id)
 
@@ -1348,6 +1493,7 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: list (IPs)
         """
+        self._restore_from_storage(instance_id)
         if self._start_failed:
             raise Exception('get_ips for node %s: failing due to'
                             ' previous errors.' % instance_id)
@@ -1372,13 +1518,17 @@ class AzureCloudProvider(AbstractCloudProvider):
 
         :return: bool - True if running, False otherwise
         """
+        self._restore_from_storage(instance_id)
         if self._start_failed:
             raise Exception('is_instance_running for node %s: failing due to'
                             ' previous errors.' % instance_id)
-
-        v_m = self._qualified_name_to_vm(instance_id)
-        if not v_m:
-            raise Exception("Can't find instance_id %s" % instance_id)
+        try:
+            v_m = self._qualified_name_to_vm(instance_id)
+            if not v_m:
+                raise Exception("Can't find instance_id %s" % instance_id)
+        except Exception:
+            log.error(traceback.format_exc())
+            raise
         return v_m._power_state == 'Started'
 
     # ------------------ add-on methods ---------------------------------
@@ -1427,13 +1577,20 @@ class AzureCloudProvider(AbstractCloudProvider):
 
             # one vnet should be enough for ~ 1000 vms. Tie it to
             # the first subscription.
-            sub = self._subscriptions[0]
-            sub._vnet = AzureVNet(self._config, sub, 0)
-            sub._vnet._create()
-            # getting failures if we try to use the VNet right away, so:
-            time.sleep(WAIT_RESULT_SLEEP)
+            # NOTE: this doesn't work - can't start a vm in sub B
+            # that refers to a vnet in sub A.
+            # sub = self._subscriptions[0]
+            # sub._vnet = AzureVNet(self._config, sub, 0)
+            # sub._vnet._create()
+            index = 0
+            for sub in self._subscriptions:
+                sub._vnet = AzureVNet(self._config, sub, index)
+                sub._vnet._create()
+                index += 1
         except Exception as exc:
             log.error('_create_global_reqs error: %s', exc)
+            log.debug("setting start_failed flag. Will not "
+                      "try to start further nodes.")
             self._start_failed = True
             raise
 
@@ -1442,6 +1599,18 @@ class AzureCloudProvider(AbstractCloudProvider):
     #
     def _delete_global_reqs(self):
         try:
+            # delete all the OS VHDs
+            while self._disks_to_delete:
+                for disk_name, disk_info in self._disks_to_delete.items():
+                    if disk_info['TRIES'] >= VHD_DELETE_ATTEMPTS:
+                        log.error("failed to delete vhd %s after %i attempts. "
+                                  "giving up.", disk_name, disk_info['TRIES'])
+                        del self._disks_to_delete[disk_name]
+                        continue
+                    if self._delete_disk(disk_name, disk_info):
+                        del self._disks_to_delete[disk_name]
+                time.sleep(5)
+
             for sub in self._subscriptions:
                 for c_s in sub._cloud_services:
                     if c_s._instances:
@@ -1453,15 +1622,100 @@ class AzureCloudProvider(AbstractCloudProvider):
                     c_s._delete()
                     log.debug("Deleted cloud service '%s'", c_s._name)
 
-                for s_a in self._storage_accounts:
+                for s_a in sub._storage_accounts:
                     s_a._delete()
                     log.debug("Deleted storage account '%s'", s_a._name)
-            self._subscriptions[0]._vnet._delete()
+
+                sub._vnet._delete()
         except Exception as exc:
             log.error('_delete_global_reqs error: %s', exc)
             raise
 
-    # methods to support pickling
+    def _delete_disk(self, disk_name, disk_info):
+        disk_info['TRIES'] += 1
+        if disk_info['TRIES'] > VHD_DELETE_ATTEMPTS:
+            return False
+        sms = disk_info['SMS']
+        now = time.time()
+        if disk_info['LATEST_TRY'] and \
+                (now - disk_info['LATEST_TRY'] < VHD_DELETE_INTERVAL):
+            return False
+        disk_info['LATEST_TRY'] = now
+        try:
+            # delete_vhd=False doesn't seem to help if the disk is not
+            # ready to be deleted yet
+            sms.delete_disk(disk_name=disk_name, delete_vhd=True)
+            log.debug('_delete_vhd %s: success on attempt %i',
+                      disk_name, disk_info['TRIES'])
+            return True
+        except Exception as exc:
+            if str(exc) == 'Not found (Not Found)':
+                log.debug(
+                    "_delete_vhd: 'not found' deleting %s, assuming "
+                    "success", disk_name)
+                return True
+            log.error('_delete_vhd: error on attempt #%i to delete '
+                      'disk %s: %s' % (disk_info['TRIES'], disk_name, exc))
+            return False
+
+    # methods to support saving and loading our (i.e. cloud provider's) state
+
+    def _save_or_update(self):
+        """Save or update the private state needed by the cloud provider.
+        """
+        with self._resource_lock:
+            if not self._config or not self._config._storage_path:
+                raise Exception("self._config._storage path is undefined")
+            if not self._config._base_name:
+                raise Exception("self._config._base_name is undefined")
+            if not os.path.exists(self._config._storage_path):
+                os.makedirs(self._config._storage_path)
+            path = self._get_cloud_provider_storage_path()
+            with open(path, 'wb') as storage:
+                pickle.dump(self._config, storage, pickle.HIGHEST_PROTOCOL)
+                pickle.dump(self._subscriptions, storage,
+                            pickle.HIGHEST_PROTOCOL)
+
+    def _get_cloud_provider_storage_path(self):
+        cluster_file = 'azure_%s.pickle' % self._config._base_name
+        return os.path.join(self._config._storage_path, cluster_file)
+
+    def _delete_cloud_provider_storage(self):
+        full_path = None
+        try:
+            cluster_file = 'azure_%s.pickle' % self._config._base_name
+            full_path = os.path.join(self._config._storage_path, cluster_file)
+            if os.path.isfile(full_path):
+                os.remove(full_path)
+        except Exception as exc:
+            log.error("Unable to delete storage file %s: %s", full_path, exc)
+
+    # when cluster provider method called, all we know is an instance name.
+    def _restore_from_storage(self, instance_name):
+        with self._resource_lock:
+            if self._config._base_name:
+                return  # our state is intact, don't load
+            if not self._config._storage_path:
+                raise Exception("self._config._storage_path is undefined")
+            self._config._base_name, _, _ = instance_name.partition('_')
+            path = self._get_cloud_provider_storage_path()
+            if not os.path.exists(path):
+                raise Exception("cloud provider storage file %s not "
+                                "found" % path)
+            with open(path, 'r') as storage:
+                self._config = pickle.load(storage)
+                self._subscriptions = pickle.load(storage)
+                # fix up circular references
+                self._config._parent = self
+                for sub in self._subscriptions:
+                    for clds in sub._cloud_services:
+                        clds._config = self._config
+                        clds._subscription = sub
+                    for stac in sub._storage_accounts:
+                        stac._config = self._config
+                        stac._subscription = sub
+
+    # methods to support pickling by elasticluster
 
     def __getstate__(self):
         dct = self.__dict__.copy()

@@ -602,11 +602,10 @@ class SshFrontend(AbstractCommand):
             sys.exit(1)
         host = frontend.connection_ip()
 
-        if True:
-            # dsteinkraus - handle explicit port number
-            addr, _, port = host.partition(':')
-            if not port:
-                port = str(SSH_PORT)
+        # handle explicit port number
+        addr, _, port = host.partition(':')
+        if not port:
+            port = str(SSH_PORT)
 
         username = frontend.image_user
         knownhostsfile = cluster.known_hosts_file if cluster.known_hosts_file \
