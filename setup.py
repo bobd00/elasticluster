@@ -66,6 +66,8 @@ required_packages = [
     'oauth2client',
     'httplib2',
     'python-gflags',
+    'pbr==0.11',
+    'azure-ansible',
 ]
 
 if sys.version_info[:2] == (2, 6):
