@@ -54,7 +54,6 @@ required_packages = [
     'paramiko',
     'ansible==1.7.2',
     'azure',
-    'cryptography',
     'voluptuous',
     'configobj',
     # EC2 clouds
@@ -64,9 +63,7 @@ required_packages = [
     # GCE cloud
     'google-api-python-client',
     'oauth2client',
-    'httplib2',
     'python-gflags',
-    'pbr==0.11',
 ]
 
 if sys.version_info[:2] == (2, 6):
@@ -77,7 +74,7 @@ if sys.version_info[:2] == (2, 6):
 
 setup(
     name="azure-elasticluster",
-    version="0.3.dev2",
+    version="0.3.dev5",
     description="A fork of elasticluster with Azure support",
     long_description=open('README.rst').read(),
     author="dsteinkraus",

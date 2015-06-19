@@ -10,6 +10,16 @@ Dave Steinkraus / Trevor Eberl 6/18/2015
 
 This document, and the Azure provider for elasticluster, are works in progress. Expect changes.
 
+Note about pip (6/19/15): There is a bug in the Ubuntu version of pip at this time. (see
+https://bugs.launchpad.net/ubuntu/+source/python-pip/+bug/1306991) If you encounter this bug, the command ``pip install --pre azure-elasticluster`` will fail.
+At that point, if you try to run the ``pip`` command by itself, that will also fail. The solution is as follows:
+::
+
+	sudo easy_install -U pip	# this will uninstall and reinstall pip, without the problem
+	sudo pip uninstall elasticluster	# note, that's NOT azure-elasticluster, just elasticluster
+	sudo pip install --pre azure-elasticluster
+
+
 Notes about this version: The basis for this code is elasticluster 1.3.dev0 (which is known to be compatible with bcbio_vm at this time).
 This is not the current version of elasticluster. Another branch/PyPI package will be created based on the current version.
 
@@ -54,21 +64,19 @@ is a good general practice. If installing on a computer (or virtual machine) tha
 
 3. Install the specific Python packages for this test scenario:
 
-::
-
-	pip install google-api-python-client
-
-The Microsoft Azure SDK for Python will be automatically installed by the azure-elasticluster package. For more information see: https://github.com/Azure/azure-sdk-for-python/
-
 This is the forked version of elasticluster that supports Azure (for testing prior to integration with elsticluster).
 (NOTE: A previous version of this code required a special version of Ansible. This is no longer the case.)
 In spite of the different PyPI name here, the package actually installed will be named ``elasticluster``, so if you also need to run
 the standard version of elasticluster on the same computer, you should use a virtual environment for this one. 
-The ``--pre`` flag is needed because this is labeled as a "dev" version in PyPI.
+The ``--pre`` flag is needed because this is labeled as a "dev" version in PyPI. NOTE: If you are in a virtual environment, 
+do NOT specify ``sudo`` in the following command. If not in a virtual environment, you MUST specify ``sudo``.
 
 ::
 
-	pip install --pre azure-elasticluster
+	sudo pip install --pre azure-elasticluster
+
+The Microsoft Azure SDK for Python will be automatically installed by the azure-elasticluster package. For more 
+information see: https://github.com/Azure/azure-sdk-for-python/
 
 4. Confirm elasticluster is ready to run:
 
@@ -102,7 +110,8 @@ can be blank.
 
 	openssl x509 -outform der -in managementCert.pem -out managementCert.cer
 
-6. You'll need a keypair to access the virtual machines during provisioning, and later via ssh. For now [to be fixed soon], you should create a private key file that matches your management cert, like this:
+6. You'll need a keypair to access the virtual machines during provisioning, and later via ssh. For now [to be fixed soon], 
+you should create a private key file that matches your management cert, like this:
 
 ::
 
@@ -123,10 +132,10 @@ Use these commands if needed on the .pem, .cer, and .key files:
 	# replace 'my_user_name' with your username - you knew that
 	sudo chown my_user_name:my_user_name ~/.ssh/managementCert.pem
 	sudo chmod 600 ~/.ssh/managementCert.pem
+	# make sure you do this to all 3 files!
 
-7. Upload managementCert.cer to your Azure subscription via the web portal. (Scroll down to "settings" on the left-hand menu, then click 
-"management certificates" at the top, and you'll find an "upload" button at the bottom.)
-
+7. Upload managementCert.cer to your Azure subscription via the web portal (https://manage.windowsazure.com). (Scroll down to "settings" on the 
+left-hand menu, then click "management certificates" at the top, and you'll find an "upload" button at the bottom.)
 
 
 8. Edit the elasticluster config file. (The default is ``~/.elasticluster/config``. You can optionally specify a different file/path on the 
@@ -155,7 +164,9 @@ not been tested yet.
 	elasticluster -vvv start azure-gridengine
 
 If all goes well, first you'll see global resources created and then the nodes being brought up. Then elasticluster will try to ssh to 
-each node - this typically fails for awhile, as the nodes finish booting up, and then it succeeds. When all the nodes have been contacted, the Ansible provisioning step will start. This installs the normal gridengine setup that comes with elasticluster - nothing's been modified for Azure. Finally, elasticluster will print a "your cluster is ready!" message.
+each node - this typically fails for awhile, as the nodes finish booting up, and then it succeeds. When all the nodes have been contacted, the Ansible 
+provisioning step will start. This installs the normal gridengine setup that comes with elasticluster - nothing's been modified for Azure. Finally, 
+elasticluster will print a "your cluster is ready!" message.
 
 On occasion, something will go wrong during the Ansible provisioning phase, which follows the creation of the cluster itself (i.e. the 
 virtual machines, storage accounts, cloud services, and virtual network). In these cases, at the end of the output there will usually be 
@@ -185,21 +196,16 @@ there's no need to destroy and restart from scratch. Instead, you can re-run the
 
 Occasionally, Azure will start a VM, but it will stay in an unreachable state. In the Azure console, such a VM will show a status 
 of "provisioning failed". It will never respond to connection attempts. Elasticluster tries and fails to contact the VM until the 
-configured time [WHAT!!!] has elapsed. Then it will try to delete the VM (which usually works) and will continue on with whatever VMs 
+configured time (600 seconds, hardcoded in ``cluster.py`` as ``startup_timeout``) has elapsed. Then it will try to delete the VM (which usually 
+succeeds) and will continue on with whatever VMs 
 remain. (But if the failed node was the only frontend node, the cluster won't be much use, and you'll probably want to stop it.)
 
 If a cluster is in an unusable state, perhaps because of errors on startup or shutdown, and can't be stopped cleanly with the 
 elasticluster ``stop`` command, you might need to clean up Azure resources as well as local files to prevent errors on the next start 
 (and to prevent unwanted Azure charges). Here are the steps:
 
-1. Find your elasticluster storage directory. By default, this is ``~/.elasticluster/storage``. You might have set it to something else, either 
-by using the ``-s {path}`` option on the elasticluster command line, or by setting
-::
-
-	[storage]
-	storage_path = {path}
-	
-in your config file (if you are using the latest version of elasticluster).
+1. Find your elasticluster storage directory. By default, this is ``~/.elasticluster/storage``. You might have set it to something else,  
+by using the ``-s {path}`` option on the elasticluster command line.
 
 2. From the storage directory, delete all files whose names contain your cluster name, or the base_name specified in your config. For example:
 ::
