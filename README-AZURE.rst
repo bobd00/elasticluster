@@ -147,9 +147,6 @@ For the certificate, specify the .pem file created in step 5 (e.g. ``/home/my_us
 For user_key_private, specify the .key file created in step 7 (e.g. ``/home/my_user_name/.ssh/managementCert.key``). For user_key_public, specify 
 the same .pem file you used for the certificate entry.
 
-(Warning - do not use ``~`` (tilde) in the paths for these values - specify the whole path explicitly. This is another case where ``~`` will 
-not be interpreted correctly.)
-
 Set the basename to a meaningful string of between 3 and 15 characters, digits and lowercase letters only. All Azure resources created will 
 include this string.
 
