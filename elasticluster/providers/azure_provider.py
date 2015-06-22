@@ -363,7 +363,8 @@ class AzureGlobalConfig(object):
                                     AzureSubscription(
                                         config=self,
                                         subscription_id=match.group(1),
-                                        certificate=match.group(2),
+                                        certificate=os.path.expanduser(
+                                            match.group(2)),
                                         index=index))
                         else:
                             log.debug(
@@ -906,19 +907,24 @@ class AzureVNet(object):
                 config = tree.find(
                     self._deco('VirtualNetworkConfiguration'))
                 sites = config.find(self._deco('VirtualNetworkSites'))
-                for site in sites.findall(
-                        self._deco('VirtualNetworkSite')):
-                    if site.get('name') == self._name:
-                        if site.get('location') == self._config._location:
-                            log.warn("unexpected: found in xml: vnet %s with "
-                                     "location %s",
-                                     self._name, self._config._location)
-                        else:
-                            log.warn("vnet %s found in xml, but location "
-                                     "is %s (expected %s)", self._name,
-                                     site.get('location'),
-                                     self._config._location)
-                        return
+                if sites:
+                    for site in sites.findall(
+                            self._deco('VirtualNetworkSite')):
+                        if site.get('name') == self._name:
+                            if site.get('location') == self._config._location:
+                                log.warn("unexpected: found in xml: vnet %s with "
+                                         "location %s",
+                                         self._name, self._config._location)
+                            else:
+                                log.warn("vnet %s found in xml, but location "
+                                         "is %s (expected %s)", self._name,
+                                         site.get('location'),
+                                         self._config._location)
+                            return
+                else:
+                    # probably means there is 1+ DNS servers but no vnets
+                    sites = xmltree.Element(self._deco('VirtualNetworkSites'))
+                    config.append(sites)
             else:
                 # no vnets defined. just add ours
                 prior_xml = self._empty_network_config_xml()
@@ -1335,7 +1341,8 @@ class AzureCloudProvider(AbstractCloudProvider):
         self._disks_to_delete = {}
 
         self._config = AzureGlobalConfig(
-            self, subscription_id, certificate, storage_path)
+            self, subscription_id, os.path.expanduser(certificate),
+            storage_path)
 
     def start_instance(
             self,
@@ -1654,8 +1661,8 @@ class AzureCloudProvider(AbstractCloudProvider):
                     "_delete_vhd: 'not found' deleting %s, assuming "
                     "success", disk_name)
                 return True
-            log.error('_delete_vhd: error on attempt #%i to delete '
-                      'disk %s: %s' % (disk_info['TRIES'], disk_name, exc))
+            # log.error('_delete_vhd: error on attempt #%i to delete '
+            #          'disk %s: %s' % (disk_info['TRIES'], disk_name, exc))
             return False
 
     # methods to support saving and loading our (i.e. cloud provider's) state
