@@ -74,7 +74,7 @@ if sys.version_info[:2] == (2, 6):
 
 setup(
     name="azure-elasticluster",
-    version="0.3.dev5",
+    version="0.3.dev6",
     description="A fork of elasticluster with Azure support",
     long_description=open('README.rst').read(),
     author="dsteinkraus",

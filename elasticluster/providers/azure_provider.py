@@ -950,6 +950,7 @@ class AzureVNet(object):
                     for name, value in response.headers:
                         if name.lower() == 'x-ms-request-id':
                             result.request_id = value
+                            break
                 self._subscription._wait_result(
                     result, self._config._wait_timeout)
                 log.debug('created vnet %s', self._name)

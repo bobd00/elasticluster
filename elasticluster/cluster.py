@@ -795,7 +795,6 @@ class Node(object):
             try:
                 log.debug("Trying to connect to host %s (%s)",
                           self.name, ip)
-                port = SSH_PORT # must specify, since we are passing it
                 # handle case of explicit port
                 addr, _, port = ip.partition(':')
                 # if port not specified, will default to SSH_PORT (22)
@@ -803,6 +802,7 @@ class Node(object):
                     port = int(port)
                 else:
                     addr = ip
+                    port = SSH_PORT
 
                 ssh.connect(addr,
                             username=self.image_user,
