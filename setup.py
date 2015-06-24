@@ -63,6 +63,7 @@ required_packages = [
     # GCE cloud
     'google-api-python-client',
     'oauth2client',
+    'httplib2',
     'python-gflags',
 ]
 
@@ -74,13 +75,14 @@ if sys.version_info[:2] == (2, 6):
 
 setup(
     name="azure-elasticluster",
-    version="0.3.dev6",
+    version="0.3.dev7",
     description="A fork of elasticluster with Azure support",
     long_description=open('README.rst').read(),
-    author="dsteinkraus",
-    author_email="dsteinkraus@users.noreply.github.com",
+    author="Grid Computing Competence Centre, University of Zurich",
+    author_email="info@gc3.lists.uzh.ch",
     license="LGPL",
-    url="https://github.com/bobd00/elasticluster",
+    keywords="cloud openstack amazon ec2 ssh hpc gridengine torque slurm batch job elastic",
+    url="https://github.com/gc3-uzh-ch/elasticluster",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Environment :: Console",
@@ -103,7 +105,7 @@ setup(
     ],
     packages=find_packages(),
     install_requires=required_packages,
-    tests_require=['tox', 'mock', 'nose'],
+    tests_require = ['tox', 'mock', 'nose'],
     data_files=ansible_pb_files(),
     entry_points={
         'console_scripts': [
