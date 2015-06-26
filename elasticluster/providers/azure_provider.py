@@ -570,7 +570,6 @@ class AzureCloudService(object):
                       self._name, exc)
             raise
 
-    # not currently in use
     @property
     def _deployment(self):
         try:
@@ -619,6 +618,15 @@ class AzureCloudService(object):
                                       v_m._qualified_name, attempt, RETRIES)
                             raise   # this is serialized, so probably a
                             # legit error
+                        if 'is invalid' in str(exc):
+                            if re.match('value .* for parameter .* '
+                                        'is invalid', str(exc)):
+                                log.error('error creating vm %s (attempt %i '
+                                          'of %i): virtual machine '
+                                          'already exists.',
+                                          v_m._qualified_name, attempt,
+                                          RETRIES)
+                                raise   # treat as legit error
                         else:
                             log.error('error creating vm %s (attempt '
                                       '%i of %i): %s', v_m._qualified_name,
@@ -907,7 +915,7 @@ class AzureVNet(object):
                 config = tree.find(
                     self._deco('VirtualNetworkConfiguration'))
                 sites = config.find(self._deco('VirtualNetworkSites'))
-                if sites:
+                if sites is not None:  # plain "if sites" gets a warning
                     for site in sites.findall(
                             self._deco('VirtualNetworkSite')):
                         if site.get('name') == self._name:
@@ -985,18 +993,19 @@ class AzureVNet(object):
             config = tree.find(
                 self._deco('VirtualNetworkConfiguration'))
             sites = config.find(self._deco('VirtualNetworkSites'))
-            for site in sites.findall(self._deco('VirtualNetworkSite')):
-                if site.get('name') == self._name:
-                    if site.get('Location') != self._config._location:
-                        log.warn("vnet %s found in xml, but location is %s "
-                                 "(expected %s)", self._name,
-                                 site.get('location'), self._config._location)
-                    sites.remove(site)
-                    found = True
-                    break
-            if not found:
-                raise Exception("AzureVNet _delete: vnet %s exists, but "
-                                "not found in xml" % self._name)
+            if sites is not None:
+                for site in sites.findall(self._deco('VirtualNetworkSite')):
+                    if site.get('name') == self._name:
+                        if site.get('Location') != self._config._location:
+                            log.warn("vnet %s found in xml, but location is %s "
+                                     "(expected %s)", self._name,
+                                     site.get('location'), self._config._location)
+                        sites.remove(site)
+                        found = True
+                        break
+                if not found:
+                    raise Exception("AzureVNet _delete: vnet %s exists, but "
+                                    "not found in xml" % self._name)
             xml = xmltree.tostring(tree)
         except Exception as exc:
             err = 'error preparing AzureVNet _delete: %s' % exc
@@ -1433,6 +1442,7 @@ class AzureCloudProvider(AbstractCloudProvider):
             return None
         log.debug('started instance %s', v_m._qualified_name)
         if index == self._config._n_vms_requested - 1:
+            # all nodes started
             self._times['NODES_STARTED'] = time.time()
             self._times['SETUP_ELAPSED'] = self._times['SETUP_DONE'] - \
                 self._times['CLUSTER_START']
@@ -1452,6 +1462,9 @@ class AzureCloudProvider(AbstractCloudProvider):
                       self._times['CLUSTER_START_ELAPSED'] /
                       self._config._n_vms_requested)
         self._save_or_update()  # store our state
+        # pause here to try to address the fact that Ansible setup fails
+        # more often on the first try than subsequent tries
+        retry_sleep()
         return v_m._qualified_name
 
     def stop_instance(self, instance_id):
