@@ -39,12 +39,6 @@ from elasticluster.repository import MemRepository
 
 SSH_PORT = 22
 
-class IgnorePolicy(paramiko.MissingHostKeyPolicy):
-    def missing_host_key(self, client, hostname, key):
-        log.info('Ignoring unknown %s host key for %s: %s' %
-                 (key.get_name(), hostname, hexlify(key.get_fingerprint())))
-
-
 class Cluster(object):
     """This is the heart of elasticluster and handles all cluster relevant
     behavior. You can basically start, setup and stop a cluster. Also it
