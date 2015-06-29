@@ -6,9 +6,14 @@ Testing gridengine + elasticluster + Azure
    http://docutils.sf.net/rst.html for more information
 
 
-Dave Steinkraus / Trevor Eberl 6/18/2015
+Dave Steinkraus / Trevor Eberl 6/29/2015
 
 This document, and the Azure provider for elasticluster, are works in progress. Expect changes.
+
+Bcbio_vm note: This version of Azure support for elasticluster is intended for use with bcbio_vm. It is minimally changed from the fork at
+https://github.com/chapmanb/elasticluster/. This document does not discuss integration of Azure support with bcbio_vm; one resource for
+that is https://github.com/alexandrucoman/vagrant-environment. This document describes standalone installation of elasticluster with Azure
+support, but the same concepts (and troubleshooting tips) apply.
 
 Note about pip (6/19/15): There is a bug in the Ubuntu version of pip at this time. (see
 https://bugs.launchpad.net/ubuntu/+source/python-pip/+bug/1306991) If you encounter this bug, the command ``pip install --pre azure-elasticluster`` will fail.
@@ -110,7 +115,7 @@ can be blank.
 
 	openssl x509 -outform der -in managementCert.pem -out managementCert.cer
 
-6. You'll need a keypair to access the virtual machines during provisioning, and later via ssh. For now [to be fixed soon], 
+6. You'll need a keypair to access the virtual machines during provisioning, and later via ssh. For now, 
 you should create a private key file that matches your management cert, like this:
 
 ::
@@ -133,6 +138,9 @@ Use these commands if needed on the .pem, .cer, and .key files:
 	sudo chown my_user_name:my_user_name ~/.ssh/managementCert.pem
 	sudo chmod 600 ~/.ssh/managementCert.pem
 	# make sure you do this to all 3 files!
+    
+(Note: access to a specific virtual machine using a keypair that is not also an Azure management keypair doesn't work at present, but
+is an open work item.)
 
 7. Upload managementCert.cer to your Azure subscription via the web portal (https://manage.windowsazure.com). (Scroll down to "settings" on the 
 left-hand menu, then click "management certificates" at the top, and you'll find an "upload" button at the bottom.)
@@ -149,10 +157,6 @@ the same .pem file you used for the certificate entry.
 
 Set the basename to a meaningful string of between 3 and 15 characters, digits and lowercase letters only. All Azure resources created will 
 include this string.
-
-
-There are some other config settings available that are not needed for this example. Clusters with more than 10 or so compute nodes have 
-not been tested yet.
 
 9. Start the cluster (``-vvv`` will produce verbose diagnostic output - you can use zero to four v's):
 
@@ -222,3 +226,12 @@ this order:
 
 	c. Networks. Again, it may take a few minutes after deleting other resources before you can delete a network.
 
+14. Additional config settings:
+
+The Azure provider automatically decides how many storage accounts and how many cloud services to create, based on the number of nodes being
+requested. (The constants VMS_PER_CLOUD_SERVICE and VMS_PER_STORAGE_ACCOUNT control these calculations.) However, you can override these values
+by setting n_cloud_services and/or n_storage_accounts in the [cluster] section of the config file. For clusters of 50 or more VMs, you may find
+that creating more cloud services and storage accounts improves speed of cluster starting, stopping, and usage.
+
+You can also provide the subscription_file setting, which allows you to provide more than one Azure subscription in an external file. This
+feature is experimental at this time and should not be necessary for clusters of fewer than 100 nodes.
