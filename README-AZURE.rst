@@ -48,6 +48,7 @@ In this guide, we'll walk through all the steps to:
 		libssl-dev libffi-dev nodejs-legacy
 	sudo apt-get install npm -y
 	sudo apt-get install libxml2-dev libxslt1-dev
+    sudo pip install --upgrade httplib2
 	# these two steps are only needed if you want to run in a virtual Python environment:
 	sudo apt-get install python-virtualenv
 	sudo pip install virtualenvwrapper
