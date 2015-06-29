@@ -78,7 +78,7 @@ do NOT specify ``sudo`` in the following command. If not in a virtual environmen
 
 ::
 
-	sudo pip install --pre azure-elasticluster
+	sudo pip install --pre --no-use-wheel azure-elasticluster
 
 The Microsoft Azure SDK for Python will be automatically installed by the azure-elasticluster package. For more 
 information see: https://github.com/Azure/azure-sdk-for-python/
