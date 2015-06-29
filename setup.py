@@ -74,9 +74,9 @@ if sys.version_info[:2] == (2, 6):
     required_packages.append('argparse')
 
 setup(
-    name="azure-elasticluster",
-    version="0.3.dev7",
-    description="A fork of elasticluster with Azure support",
+    name="elasticluster",
+    version="1.1-dev",
+    description="A command line tool to create, manage and setup computing clusters hosted on a public or private cloud infrastructure.",
     long_description=open('README.rst').read(),
     author="Grid Computing Competence Centre, University of Zurich",
     author_email="info@gc3.lists.uzh.ch",
