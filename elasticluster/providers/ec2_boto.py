@@ -17,13 +17,17 @@
 __author__ = 'Nicolas Baer <nicolas.baer@uzh.ch>, Antonio Messina <antonio.s.messina@gmail.com>'
 
 # System imports
+import hashlib
 import os
 import urllib
 import threading
+import time
 
 # External modules
 import boto
 from boto import ec2
+from boto.exception import EC2ResponseError
+from Crypto.PublicKey import RSA
 from paramiko import DSSKey, RSAKey, PasswordRequiredException
 from paramiko.ssh_exception import SSHException
 
@@ -50,16 +54,19 @@ class BotoCloudProvider(AbstractCloudProvider):
     :param bool request_floating_ip: Whether ip are assigned automatically
                                     `True` or floating ips have to be
                                     assigned manually `False`
+    :param str instance_profile: Instance profile with IAM role permissions
     """
     __node_start_lock = threading.Lock()  # lock used for node startup
 
     def __init__(self, ec2_url, ec2_region, ec2_access_key, ec2_secret_key,
-                 vpc=None, storage_path=None, request_floating_ip=False):
+                 vpc=None, storage_path=None, request_floating_ip=False,
+                 instance_profile=None):
         self._url = ec2_url
         self._region_name = ec2_region
         self._access_key = ec2_access_key
         self._secret_key = ec2_secret_key
         self._vpc = vpc
+        self._instance_profile = instance_profile
         self.request_floating_ip = request_floating_ip
 
         # read all parameters from url
@@ -124,8 +131,8 @@ class BotoCloudProvider(AbstractCloudProvider):
 
                 for vpc in vpc_connection.get_all_vpcs():
                     log.debug("Checking whether %s matches %s/%s" %
-                        (self._vpc, vpc.tags['Name'], vpc.id))
-                    if self._vpc in [vpc.tags['Name'], vpc.id]:
+                        (self._vpc, vpc.tags.get('Name'), vpc.id))
+                    if self._vpc in [vpc.tags.get('Name'), vpc.id]:
                         self._vpc_id = vpc.id
                         if self._vpc != self._vpc_id:
                             log.debug("VPC %s matches %s" %
@@ -151,7 +158,11 @@ class BotoCloudProvider(AbstractCloudProvider):
     def start_instance(self, key_name, public_key_path, private_key_path,
                        security_group, flavor, image_id, image_userdata,
                        username=None, node_name=None, network_ids=None,
-                       **kwargs):
+                       root_volume_device=None, root_volume_size=None,
+                       root_volume_type=None, root_volume_iops=None,
+                       encrypted_volume_device=None, encrypted_volume_size=None,
+                       encrypted_volume_type=None, encrypted_volume_iops=None,
+                       placement_group=None, **kwargs):
         """Starts a new instance on the cloud using the given properties.
         The following tasks are done to start an instance:
 
@@ -171,6 +182,15 @@ class BotoCloudProvider(AbstractCloudProvider):
         :param str image_id: image type (os) to use for the instance
         :param str image_userdata: command to execute after startup
         :param str username: username for the given ssh key, default None
+        :param str root_volume_device: Root volume device name if not /dev/sda1
+        :param str root_volume_size: Target size, in GiB, for the root volume
+        :param str root_volume_type: Type of root volume (standard, gp2, io1)
+        :param str root_volume_iops: Provisioned IOPS for the root volume
+        :param str encrypted_volume_device: Encrypted volume device name if not /dev/xvdf
+        :param str encrypted_volume_size: Target size, in GiB, for the encrypted volume
+        :param str encrypted_volume_type: Type of encrypted volume (standard, gp2, io1)
+        :param str encrypted_volume_iops: Provisioned IOPS for the encrypted volume
+        :param str placement_group: Enable low-latency networking between compute nodes.
 
         :return: str - instance id of the started instance
         """
@@ -203,11 +223,39 @@ class BotoCloudProvider(AbstractCloudProvider):
             interfaces = None
             security_groups = [security_group]
 
+        bdm = None
+        if root_volume_size:
+            bdm = ec2.blockdevicemapping.BlockDeviceMapping()
+            dev_root = ec2.blockdevicemapping.BlockDeviceType()
+            dev_root.size = int(root_volume_size)
+            dev_root.delete_on_termination = True
+            if root_volume_type:
+                dev_root.volume_type = root_volume_type
+            if root_volume_iops:
+                dev_root.iops = int(root_volume_iops)
+            dev_name = root_volume_device if root_volume_device else "/dev/sda1"
+            bdm[dev_name] = dev_root
+        if encrypted_volume_size:
+            if bdm is None:
+                bdm = ec2.blockdevicemapping.BlockDeviceMapping()
+            dev_en = ec2.blockdevicemapping.BlockDeviceType()
+            dev_en.size = int(encrypted_volume_size)
+            dev_en.delete_on_termination = True
+            dev_en.encrypted = True
+            if encrypted_volume_type:
+                dev_en.volume_type = encrypted_volume_type
+            if encrypted_volume_iops:
+                dev_en.iops = int(encrypted_volume_iops)
+            en_dev_name = encrypted_volume_device if encrypted_volume_device else "/dev/xvdf"
+            bdm[en_dev_name] = dev_en
+
         try:
             reservation = connection.run_instances(
                 image_id, key_name=key_name, security_groups=security_groups,
                 instance_type=flavor, user_data=image_userdata,
-                network_interfaces=interfaces)
+                network_interfaces=interfaces,
+                instance_profile_name=self._instance_profile,
+                block_device_map=bdm, placement_group=placement_group)
         except Exception, ex:
             log.error("Error starting instance: %s", ex)
             if "TooManyInstances" in ex:
@@ -216,12 +264,29 @@ class BotoCloudProvider(AbstractCloudProvider):
                 raise InstanceError(ex)
 
         vm = reservation.instances[-1]
-        vm.add_tag("Name", node_name)
+        # wait for instance to come up and tag with name
+        status = self._vm_status(vm)
+        while status == 'pending':
+            time.sleep(5)
+            status = self._vm_status(vm)
+        if status == "running":
+            vm.add_tag("Name", node_name)
+        else:
+            raise ValueError("Unexpected instance status %s for %s" % (status, node_name))
 
         # cache instance object locally for faster access later on
         self._instances[vm.id] = vm
 
         return vm.id
+
+    def _vm_status(self, vm):
+        """Get status, handling issues where instance not yet up.
+        """
+        try:
+            status = vm.update()
+        except EC2ResponseError:
+            status = "pending"
+        return status
 
     def stop_instance(self, instance_id):
         """Stops the instance gracefully.
@@ -266,6 +331,10 @@ class BotoCloudProvider(AbstractCloudProvider):
         instance = self._load_instance(instance_id)
 
         if instance.update() == "running":
+            output = instance.get_console_output()
+            if not output.output:
+                return False
+
             # If the instance is up&running, ensure it has an IP
             # address.
             if not instance.ip_address and self.request_floating_ip:
@@ -406,19 +475,24 @@ class BotoCloudProvider(AbstractCloudProvider):
             cloud_keypair = keypairs[name]
 
             if pkey:
-                fingerprint = str.join(
-                    ':', (i.encode('hex') for i in pkey.get_fingerprint()))
+                if "amazon" in self._ec2host:
+                    # AWS takes the MD5 hash of the key's DER representation.
+                    key = RSA.importKey(open(private_key_path).read())
+                    der = key.publickey().exportKey('DER')
+
+                    m = hashlib.md5()
+                    m.update(der)
+                    digest = m.hexdigest()
+                    fingerprint = ':'.join([
+                        digest[i:i + 2] for i in range(0, len(digest), 2)])
+                else:
+                    fingerprint = str.join(
+                        ':', (i.encode('hex') for i in pkey.get_fingerprint()))
 
                 if fingerprint != cloud_keypair.fingerprint:
-                    if "amazon" in self._ec2host:
-                        log.error(
-                            "Apparently, Amazon does not compute the RSA key "
-                            "fingerprint as we do! We cannot check if the "
-                            "uploaded keypair is correct!")
-                    else:
-                        raise KeypairError(
-                            "Keypair `%s` is present but has "
-                            "different fingerprint. Aborting!" % name)
+                    raise KeypairError(
+                        "Keypair `%s` is present but has "
+                        "different fingerprint. Aborting!" % name)
 
     def _check_security_group(self, name):
         """Checks if the security group exists.
@@ -512,3 +586,7 @@ class BotoCloudProvider(AbstractCloudProvider):
         self._ec2_connection = None
         self._vpc_connection = None
         
+    def get_console_output(self, instance_id):
+        instance = self._load_instance(instance_id)
+        instance.update()
+        return instance.get_console_output().output

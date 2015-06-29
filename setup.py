@@ -51,6 +51,7 @@ from setuptools import setup, find_packages
 
 required_packages = [
     'PyCLI',
+    'pycrypto',
     'paramiko',
     'ansible==1.7.2',
     'azure',

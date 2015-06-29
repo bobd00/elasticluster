@@ -158,6 +158,13 @@ Valid configuration keys for `boto`
     will force `elasticluster` to request such a floating IP if the
     instance doesn't get one automatically.
 
+``instance_profile``
+
+     An `IAM instance profile
+     <http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/iam-roles-for-amazon-ec2.html>`_
+     that contains roles allowing EC2 instances to have specified
+     privileges. For example, you can allow EC2 instances to access S3 without
+     passing credentials in.
 
 Valid configuration keys for `google`
 -------------------------------------
@@ -579,6 +586,48 @@ Optional configuration keys
 
     The maximum number of process to be created when virtual machines
     are started. Default is 10.
+
+``placement_group``
+
+    `Placement group
+    <http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/placement-groups.html>`_
+    to enable low-latency networking between compute nodes.
+
+``root_volume_device``
+
+    Device name of the root file system in the `block device mapping
+    <http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/block-device-mapping-concepts.html>`_.
+    Defaults to ``/dev/sda1``. ``/dev/xvda`` is another common choice on
+    HVM AMIs.
+
+``root_volume_size``
+
+    Size of the root volume, in gigabytes (GiB). The /home directory of this
+    volume on the first frontend node is shared to compute nodes using NFS.
+    Defaults to the original size of the base AMI specified by image_id.
+
+``root_volume_type``
+
+    `Root volume storage type <http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html>`_,
+    `gp2` (general purpose SSD), `io1` (provisioned IOPS SSD), or `standard`
+    (the default, magnetic).
+
+``root_volume_iops``
+
+    Specific IOPS target for provisioned IOPS SSD (`io1`) volumes.
+
+``encrypted_volume_size``, ``encrypted_volume_device``, ``encrypted_volume_type``, ``encrypted_volume_iops``
+
+    Attach an encrypted EBS volume to the AWS cluster, shared over NFS
+    to worker nodes. Options are the same as those for ``root_volume``,
+    device defaults to ``/dev/xvdf``.
+
+``ssh_hostkeys_from_console_output``
+
+    whether to retrieve SSH host keys from instances' console output,
+    instead of accepting the host keys without verification when connecting
+    via SSH for the first time. Only supported when the cloud provider is
+    `ec2_boto`
 
 Examples
 --------

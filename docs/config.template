@@ -74,6 +74,10 @@
 #                      Valid values: `True`, `False`. Default is `False`
 # vpc:      the name or ID of the AWS Virtual Private Cloud to provision
 #           resources in.
+# instance_profile: an IAM instance profile that contains roles allowing
+#                   EC2 instances to have specified privileges. For example,
+#                   you can allow EC2 instances to access S3 without
+#                   passing credentials in.
 #
 # **OpenStack users**: from the web interface you can download a file
 # containing your EC2 credentials by logging in in your provider web
@@ -467,6 +471,31 @@ worker_groups=ipython_engine
 #          correctly (i.e. are not in error state), the cluster is
 #          configured anyway, otherwise creation of the cluster will
 #          fail.
+#
+# placement_group: Placement group to enable low-latency networking
+#                  between compute nodes.
+#
+# root_volume_device: Device name of the root file system. Defaults to
+#                     `/dev/sda1`. `/dev/xvda1` is another common choice
+#                     on HVM AMIs.
+#
+# root_volume_size: Size of the root volume, in gigabytes (GiB). The /home
+#                   directory of this volume on the first frontend node is
+#                   shared to compute nodes using NFS. Defaults to the
+#                   original size of the base AMI specified by image_id.
+#
+# root_volume_type: Root volume storage type, `gp2` (general purpose SSD),
+#                   `io1` (provisioned IOPS SSD), or `standard` (the default,
+#                   magnetic).
+#
+# root_volume_iops: Specific IOPS target for provisioned IOPS SSD (`io1`)
+#                   volumes.
+#
+# encrypted_volume_size, encrypted_volume_device,
+# encrypted_volume_type, encrypted_volume_iops:
+#         Attach an encrypted EBS volume to the AWS cluster, shared over NFS
+#         to worker nodes. Options are the same as those for root_volume,
+#         device defaults to /dev/xvdf.
 #
 # Some (working) examples:
 

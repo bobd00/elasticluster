@@ -27,9 +27,13 @@ __author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
 import os
 import threading
 
-# External modules
-from novaclient import client
-from novaclient.exceptions import NotFound
+# External modulesa
+# novaclient stack is a soft requirement for use AWS/GCE use without OpenStack
+try:
+    from novaclient import client
+    from novaclient.exceptions import NotFound
+except ImportError:
+    client, NotFound = None, None
 from paramiko import DSSKey, RSAKey, PasswordRequiredException
 from paramiko.ssh_exception import SSHException
 

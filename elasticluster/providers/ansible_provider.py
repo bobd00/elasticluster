@@ -166,6 +166,8 @@ class AnsibleSetupProvider(AbstractSetupProvider):
         ansible_constants.DEFAULT_PRIVATE_KEY_FILE = private_key_file
         ansible_constants.DEFAULT_SUDO_USER = self._sudo_user
         ansible_constants.ANSIBLE_SSH_PIPELINING = self.ssh_pipelining
+        ansible_constants.ANSIBLE_SSH_ARGS = (
+            '-o UserKnownHostsFile={}'.format(cluster.known_hosts_file))
 
         # check paths
         if not inventory_path:
